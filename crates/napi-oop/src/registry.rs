@@ -8,23 +8,30 @@
 //! [`registered_names`] feeds the `Hello` handshake; [`dispatch`] routes an
 //! incoming [`Request`] to the matching thunk and produces the reply [`Message`].
 
+use std::sync::Arc;
+
 use rmpv::Value;
 
 use crate::codec::{ErrorMsg, HandleId, Message, Request, Response};
 
 /// Lets a dispatched function invoke a callback held by the peer (e.g. a JS
-/// function passed as an argument). The macro builds Rust closures that route
-/// through this; the provider runtime implements it over the live connection.
-pub trait Callbacks {
-    /// Invoke the peer-held callback `handle` with `args`, blocking for its
-    /// result. Returns `Err` if the callback or transport fails.
-    fn invoke(&self, handle: HandleId, args: Vec<Value>) -> Result<Value, String>;
+/// function passed as an argument). Modelled on napi's `ThreadsafeFunction`:
+/// invocation is **fire-and-forget** — the call is queued to the peer's event
+/// loop and returns immediately; there is no result back to Rust.
+///
+/// Must be `Send + Sync` so a [`crate::ThreadsafeFunction`] can outlive the call
+/// and fire from any thread.
+pub trait Callbacks: Send + Sync {
+    /// Queue an invocation of the peer-held callback `handle` with `args`.
+    /// Returns once enqueued; runs asynchronously on the peer.
+    fn invoke(&self, handle: HandleId, args: Vec<Value>);
 }
 
 /// A type-erased dispatch thunk: decodes args, calls the function, encodes the
-/// result. The [`Callbacks`] handle lets the function reach peer callbacks.
+/// result. The shared [`Callbacks`] handle lets the function reach peer
+/// callbacks — and lets a stored `ThreadsafeFunction` keep firing afterwards.
 /// Returns `Err(message)` if decoding or the call itself fails.
-pub type DispatchFn = fn(Vec<Value>, &dyn Callbacks) -> Result<Value, String>;
+pub type DispatchFn = fn(Vec<Value>, &Arc<dyn Callbacks>) -> Result<Value, String>;
 
 /// One registered `#[napi]` function, collected via [`inventory`].
 pub struct RegisteredFn {
@@ -47,14 +54,12 @@ pub struct RegisteredFn {
 
 inventory::collect!(RegisteredFn);
 
-/// A [`Callbacks`] that errors on any invocation — for fns that take no
-/// callbacks and for tests.
+/// A [`Callbacks`] that drops every invocation — for fns that take no callbacks
+/// and for tests. (Fire-and-forget, so dropping is observably "queued, ignored".)
 pub struct NoCallbacks;
 
 impl Callbacks for NoCallbacks {
-    fn invoke(&self, _handle: HandleId, _args: Vec<Value>) -> Result<Value, String> {
-        Err("no callbacks available in this context".to_string())
-    }
+    fn invoke(&self, _handle: HandleId, _args: Vec<Value>) {}
 }
 
 /// Look up a registered function by exported name.
@@ -75,7 +80,7 @@ pub fn registered_names() -> Vec<String> {
 /// Route a [`Request`] to its registered function, producing the reply message
 /// (a [`Message::Response`] on success or [`Message::Error`] on failure). The
 /// `callbacks` handle lets the function invoke any JS callbacks passed as args.
-pub fn dispatch(request: Request, callbacks: &dyn Callbacks) -> Message {
+pub fn dispatch(request: Request, callbacks: &Arc<dyn Callbacks>) -> Message {
     let Request { id, function, args } = request;
     match lookup(&function) {
         Some(registered) => match (registered.dispatch)(args, callbacks) {

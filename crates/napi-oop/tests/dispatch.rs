@@ -37,23 +37,36 @@ pub async fn slow_double(n: i32) -> i32 {
 }
 
 /// A callback param: the macro decodes a handle marker and builds a closure that
-/// routes through the `Callbacks` table. Sums values, calling back each step.
+/// fires through the `Callbacks` table. Sums values, notifying each step.
 #[napi]
-pub fn sum_each(values: Vec<i32>, on_step: impl Fn(i32) -> i32) -> i32 {
+pub fn sum_each(values: Vec<i32>, on_step: impl Fn(i32)) -> i32 {
     let mut total = 0;
     for v in values {
         total += v;
-        let _ = on_step(total);
+        on_step(total);
+    }
+    total
+}
+
+/// The explicit form: a `ThreadsafeFunction<T>` stored and fired via `.call`.
+#[napi]
+pub fn sum_each_tsfn(values: Vec<i32>, on_step: napi_oop::ThreadsafeFunction<i32>) -> i32 {
+    use napi_oop::ThreadsafeFunctionCallMode::NonBlocking;
+    let mut total = 0;
+    for v in values {
+        total += v;
+        on_step.call(total, NonBlocking);
     }
     total
 }
 
 fn call(function: &str, id: u64, args: Vec<Value>) -> Message {
+    let cb: std::sync::Arc<dyn registry::Callbacks> = std::sync::Arc::new(registry::NoCallbacks);
     registry::dispatch(Request {
         id,
         function: function.to_string(),
         args,
-    }, &registry::NoCallbacks)
+    }, &cb)
 }
 
 #[test]
@@ -139,28 +152,42 @@ fn manifest_flags_async_from_keyword_not_return_type() {
     assert!(!sync.is_async);
 }
 
-/// Records every callback invocation and echoes each arg straight back.
+/// Records every callback invocation (fire-and-forget, so nothing is returned).
 struct RecordingCallbacks {
     steps: std::sync::Mutex<Vec<i64>>,
 }
 
 impl registry::Callbacks for RecordingCallbacks {
-    fn invoke(&self, _handle: u64, args: Vec<Value>) -> Result<Value, String> {
-        let v = args[0].as_i64().unwrap();
-        self.steps.lock().unwrap().push(v);
-        Ok(args.into_iter().next().unwrap())
+    fn invoke(&self, _handle: u64, args: Vec<Value>) {
+        self.steps.lock().unwrap().push(args[0].as_i64().unwrap());
     }
 }
 
-#[test]
-fn callback_param_invokes_through_callbacks_table() {
-    let cb = RecordingCallbacks { steps: std::sync::Mutex::new(Vec::new()) };
+fn record(function: &str) -> (Message, std::sync::Arc<RecordingCallbacks>) {
+    let cb = std::sync::Arc::new(RecordingCallbacks { steps: std::sync::Mutex::new(Vec::new()) });
+    let dyn_cb: std::sync::Arc<dyn registry::Callbacks> = cb.clone();
     let values = Value::Array(vec![Value::from(10i64), Value::from(20i64), Value::from(30i64)]);
     let handle = Value::Map(vec![(Value::from("__napi_cb"), Value::from(7u64))]);
     let reply = registry::dispatch(
-        Request { id: 1, function: "sum_each".into(), args: vec![values, handle] },
-        &cb,
+        Request { id: 1, function: function.into(), args: vec![values, handle] },
+        &dyn_cb,
     );
+    (reply, cb)
+}
+
+#[test]
+fn callback_impl_fn_invokes_through_callbacks_table() {
+    let (reply, cb) = record("sum_each");
+    match reply {
+        Message::Response(r) => assert_eq!(r.result.as_i64(), Some(60)),
+        other => panic!("expected response, got {other:?}"),
+    }
+    assert_eq!(*cb.steps.lock().unwrap(), vec![10, 30, 60]);
+}
+
+#[test]
+fn threadsafe_function_invokes_through_callbacks_table() {
+    let (reply, cb) = record("sum_each_tsfn");
     match reply {
         Message::Response(r) => assert_eq!(r.result.as_i64(), Some(60)),
         other => panic!("expected response, got {other:?}"),
@@ -171,6 +198,8 @@ fn callback_param_invokes_through_callbacks_table() {
 #[test]
 fn callback_manifest_renders_ts_fn_type() {
     let m = napi_oop::manifest::manifest();
-    let f = m.functions.iter().find(|f| f.rust_name == "sum_each").unwrap();
-    assert_eq!(f.params, vec!["Array<number>", "(a0:number)=>number"]);
+    for name in ["sum_each", "sum_each_tsfn"] {
+        let f = m.functions.iter().find(|f| f.rust_name == name).unwrap();
+        assert_eq!(f.params, vec!["Array<number>", "(a0:number)=>void"], "{name}");
+    }
 }

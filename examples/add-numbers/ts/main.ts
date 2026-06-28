@@ -42,9 +42,15 @@ async function callAddNumbers(peer: Peer): Promise<void> {
   const steps: number[] = [];
   const total = await native.sumEach([10, 20, 30], (running) => {
     steps.push(running);
-    return running;
   });
   console.log(`[${role}] sumEach => ${total}, steps=[${steps.join(', ')}]`);
+
+  // The explicit ThreadsafeFunction form — same fire-and-forget semantics.
+  const tsteps: number[] = [];
+  const tt = await native.sumEachTsfn([10, 20, 30], (running) => {
+    tsteps.push(running);
+  });
+  console.log(`[${role}] sumEachTsfn => ${tt}, steps=[${tsteps.join(', ')}]`);
 }
 
 async function main(): Promise<void> {

@@ -72,20 +72,12 @@ pub struct ErrorMsg {
     pub message: String,
 }
 
-/// Invoke a remote callback handle (reverse direction). Reserved for the
-/// callbacks/handles phase.
+/// Invoke a remote callback handle (reverse direction). Fire-and-forget, like
+/// napi's `ThreadsafeFunction`: there is no reply, so no correlation id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CallbackInvoke {
-    pub id: CorrelationId,
     pub handle: HandleId,
     pub args: Vec<rmpv::Value>,
-}
-
-/// Result of a [`CallbackInvoke`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CallbackResult {
-    pub id: CorrelationId,
-    pub result: rmpv::Value,
 }
 
 /// Release a remote handle so the owning side can drop it.
@@ -105,7 +97,6 @@ pub enum Message {
     Response(Response),
     Error(ErrorMsg),
     CallbackInvoke(CallbackInvoke),
-    CallbackResult(CallbackResult),
     Release(Release),
 }
 

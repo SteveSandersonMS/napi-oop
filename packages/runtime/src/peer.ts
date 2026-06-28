@@ -110,7 +110,7 @@ export class Peer {
 
   private onMessage(msg: Message): void {
     if (msg.type === 'callbackInvoke') {
-      this.handleCallback(msg.id, msg.handle, msg.args);
+      this.handleCallback(msg.handle, msg.args);
       return;
     }
     if (msg.type !== 'response' && msg.type !== 'error') return;
@@ -124,18 +124,15 @@ export class Peer {
     }
   }
 
-  /** Run a JS callback the provider requested, replying with its result. */
-  private handleCallback(id: number, handle: number, args: unknown[]): void {
+  /** Run a JS callback the provider fired. Fire-and-forget: no reply is sent. */
+  private handleCallback(handle: number, args: unknown[]): void {
     const cb = this.callbacks.get(handle);
-    let result: unknown = null;
-    if (cb) {
-      try {
-        result = cb(...args);
-      } catch {
-        result = null;
-      }
+    if (!cb) return;
+    try {
+      cb(...args);
+    } catch {
+      // Fire-and-forget: callback errors are the caller's concern, not the wire's.
     }
-    this.socket.write(encodeFrame({ type: 'callbackResult', id, result }));
   }
 
   private failAll(error: Error): void {

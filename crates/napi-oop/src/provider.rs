@@ -38,16 +38,17 @@ pub fn provider_hello() -> Hello {
 /// Requests are dispatched **concurrently**: each runs on its own thread, so a
 /// slow (e.g. `async`) call doesn't head-of-line-block others. The stream is
 /// cloned into independent read and write handles (full-duplex), with the writer
-/// shared behind a mutex so responses serialize. Replies may complete out of
+/// shared behind a mutex so messages serialize. Replies may complete out of
 /// order, matched by correlation id on the caller side.
 ///
-/// A function may invoke callbacks the peer passed as arguments: the dispatch
-/// thread sends a `CallbackInvoke` and blocks on the matching `CallbackResult`,
-/// which the read loop routes back via a per-call channel.
+/// A function may invoke callbacks the peer passed as arguments. Like napi's
+/// `ThreadsafeFunction`, that is fire-and-forget: the dispatch thread writes a
+/// `CallbackInvoke` and continues — the peer runs it on its event loop.
 pub fn serve(mut stream: Stream) -> io::Result<()> {
     handshake(&mut stream, provider_hello())?;
     let writer = std::sync::Arc::new(std::sync::Mutex::new(stream.try_clone()?));
-    let pending = std::sync::Arc::new(CallbackPending::default());
+    let callbacks: std::sync::Arc<dyn crate::registry::Callbacks> =
+        std::sync::Arc::new(ProviderCallbacks { writer: std::sync::Arc::clone(&writer) });
     let mut reader = stream;
     let mut workers = Vec::new();
     loop {
@@ -55,15 +56,12 @@ pub fn serve(mut stream: Stream) -> io::Result<()> {
             None => break,
             Some(Message::Request(request)) => {
                 let writer = std::sync::Arc::clone(&writer);
-                let pending = std::sync::Arc::clone(&pending);
+                let callbacks = std::sync::Arc::clone(&callbacks);
                 workers.push(std::thread::spawn(move || {
-                    let cb = ProviderCallbacks { writer: &writer, pending: &pending };
-                    let reply = dispatch(request, &cb);
+                    let reply = dispatch(request, &callbacks);
                     let _ = write_message(&mut *writer.lock().unwrap(), &reply);
                 }));
             }
-            // A callback result arrived: route it to the blocked dispatch thread.
-            Some(Message::CallbackResult(r)) => pending.complete(r.id, Ok(r.result)),
             Some(_other) => {}
         }
     }
@@ -73,40 +71,17 @@ pub fn serve(mut stream: Stream) -> io::Result<()> {
     Ok(())
 }
 
-/// Outstanding callback invocations, awaiting a `CallbackResult` from the peer.
-#[derive(Default)]
-struct CallbackPending {
-    next: std::sync::atomic::AtomicU64,
-    map: std::sync::Mutex<std::collections::HashMap<u64, std::sync::mpsc::Sender<Result<rmpv::Value, String>>>>,
+/// The [`Callbacks`] impl handed to each dispatched function: fire-and-forget,
+/// writing a `CallbackInvoke` and returning immediately. Holds an owned writer
+/// so a stored `ThreadsafeFunction` can keep firing after the call returns.
+struct ProviderCallbacks {
+    writer: std::sync::Arc<std::sync::Mutex<Stream>>,
 }
 
-impl CallbackPending {
-    fn register(&self) -> (u64, std::sync::mpsc::Receiver<Result<rmpv::Value, String>>) {
-        let id = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.map.lock().unwrap().insert(id, tx);
-        (id, rx)
-    }
-    fn complete(&self, id: u64, value: Result<rmpv::Value, String>) {
-        if let Some(tx) = self.map.lock().unwrap().remove(&id) {
-            let _ = tx.send(value);
-        }
-    }
-}
-
-/// The [`Callbacks`] impl handed to each dispatched function: sends a
-/// `CallbackInvoke` and blocks for the matching result.
-struct ProviderCallbacks<'a> {
-    writer: &'a std::sync::Mutex<Stream>,
-    pending: &'a CallbackPending,
-}
-
-impl crate::registry::Callbacks for ProviderCallbacks<'_> {
-    fn invoke(&self, handle: u64, args: Vec<rmpv::Value>) -> Result<rmpv::Value, String> {
-        let (id, rx) = self.pending.register();
-        let msg = Message::CallbackInvoke(crate::codec::CallbackInvoke { id, handle, args });
-        write_message(&mut *self.writer.lock().unwrap(), &msg).map_err(|e| e.to_string())?;
-        rx.recv().map_err(|_| "callback channel closed".to_string())?
+impl crate::registry::Callbacks for ProviderCallbacks {
+    fn invoke(&self, handle: u64, args: Vec<rmpv::Value>) {
+        let msg = Message::CallbackInvoke(crate::codec::CallbackInvoke { handle, args });
+        let _ = write_message(&mut *self.writer.lock().unwrap(), &msg);
     }
 }
 

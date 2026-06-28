@@ -78,20 +78,29 @@ mod out_of_proc {
         let arity = arg_types.len();
         let arg_idents: Vec<_> = (0..arity).map(|i| format_ident!("__arg{i}")).collect();
         let decode_args = arg_idents.iter().zip(arg_types.iter()).map(|(ident, ty)| {
-            if let Some((inputs, output)) = fn_trait_sig(ty) {
-                // Callback param: the wire value is a handle marker; build a Rust
-                // closure that invokes the peer's callback through `__cb`.
+            if let Some((inputs, _output)) = fn_trait_sig(ty) {
+                // `impl Fn(..)` sugar: fire-and-forget closure firing at the peer.
                 let cb_args: Vec<_> = (0..inputs.len()).map(|i| format_ident!("__c{i}")).collect();
                 quote! {
                     let #ident = {
                         let __h = ::napi_oop::wire::callback_handle(&__iter.next().unwrap())
                             .map_err(|e| ::std::string::ToString::to_string(&e))?;
-                        move |#(#cb_args: #inputs),*| -> #output {
-                            let __r = __cb.invoke(__h, ::std::vec![
+                        let __sink = ::std::sync::Arc::clone(__cb);
+                        move |#(#cb_args: #inputs),*| {
+                            __sink.invoke(__h, ::std::vec![
                                 #(::napi_oop::wire::to_wire(&#cb_args).unwrap()),*
-                            ]).expect("callback failed");
-                            ::napi_oop::wire::from_wire(__r).expect("decode callback result")
+                            ]);
                         }
+                    };
+                }
+            } else if tsfn_inner(ty).is_some() {
+                // Explicit `ThreadsafeFunction<T>`: decode the handle, hand it the
+                // shared sink so it can be stored and fired after the call.
+                quote! {
+                    let #ident = {
+                        let __h = ::napi_oop::wire::callback_handle(&__iter.next().unwrap())
+                            .map_err(|e| ::std::string::ToString::to_string(&e))?;
+                        ::napi_oop::ThreadsafeFunction::__new(__h, ::std::sync::Arc::clone(__cb))
                     };
                 }
             } else {
@@ -103,13 +112,17 @@ mod out_of_proc {
         });
 
         // Stringify each Rust type for the manifest the TS generator consumes;
-        // callback params become a TS function-type string the generator passes
-        // through verbatim.
+        // callback params (both forms) become a TS function-type string.
         let param_type_strs: Vec<String> = arg_types
             .iter()
-            .map(|ty| match fn_trait_sig(ty) {
-                Some((inputs, output)) => ts_fn_type(&inputs, &output),
-                None => quote!(#ty).to_string().split_whitespace().collect(),
+            .map(|ty| {
+                if let Some((inputs, _)) = fn_trait_sig(ty) {
+                    ts_fn_type(&inputs)
+                } else if let Some(inner) = tsfn_inner(ty) {
+                    ts_fn_type(std::slice::from_ref(&inner))
+                } else {
+                    quote!(#ty).to_string().split_whitespace().collect()
+                }
             })
             .collect();
         let ret_type_str: String = match &func.sig.output {
@@ -133,7 +146,7 @@ mod out_of_proc {
             const _: () = {
                 fn __napi_oop_dispatch(
                     __args: ::std::vec::Vec<::napi_oop::rmpv::Value>,
-                    __cb: &dyn ::napi_oop::registry::Callbacks,
+                    __cb: &::std::sync::Arc<dyn ::napi_oop::registry::Callbacks>,
                 ) -> ::core::result::Result<::napi_oop::rmpv::Value, ::std::string::String> {
                     if __args.len() != #arity {
                         return ::core::result::Result::Err(::std::format!(
@@ -192,9 +205,30 @@ mod out_of_proc {
         None
     }
 
-    /// Render a TS function-type string (`(a0: T, …) => R`) for a callback param,
-    /// reusing the runtime's Rust→TS scalar mapping by re-stringifying the types.
-    fn ts_fn_type(inputs: &[syn::Type], output: &syn::Type) -> String {
+    /// If `ty` is `ThreadsafeFunction<T>`, return `T`. Used to recognise the
+    /// explicit callback form alongside the `impl Fn(..)` sugar.
+    fn tsfn_inner(ty: &syn::Type) -> Option<syn::Type> {
+        let path = match ty {
+            syn::Type::Path(p) => &p.path,
+            _ => return None,
+        };
+        let seg = path.segments.last()?;
+        if seg.ident != "ThreadsafeFunction" {
+            return None;
+        }
+        if let syn::PathArguments::AngleBracketed(a) = &seg.arguments {
+            for arg in &a.args {
+                if let syn::GenericArgument::Type(t) = arg {
+                    return Some(t.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Render a TS function-type string (`(a0: T, …) => void`) for a callback
+    /// param. Callbacks are fire-and-forget, so the return is always `void`.
+    fn ts_fn_type(inputs: &[syn::Type]) -> String {
         let params: Vec<String> = inputs
             .iter()
             .enumerate()
@@ -203,7 +237,6 @@ mod out_of_proc {
                 format!("a{i}:{ts}")
             })
             .collect();
-        let ret: String = quote!(#output).to_string().split_whitespace().collect();
-        format!("({})=>{}", params.join(","), ret)
+        format!("({})=>()", params.join(","))
     }
 }

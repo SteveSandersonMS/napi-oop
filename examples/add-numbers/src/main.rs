@@ -30,13 +30,27 @@ pub async fn multiply_slow(a: i32, b: i32) -> i32 {
 }
 
 /// Adds each number, invoking the JS callback once per element with the running
-/// total. Demonstrates a callback param: the closure calls back into Node.
+/// total. Demonstrates a fire-and-forget callback: the closure notifies Node but
+/// expects nothing back, matching napi's ThreadsafeFunction.
 #[napi]
-pub fn sum_each(values: Vec<i32>, on_step: impl Fn(i32) -> i32) -> i32 {
+pub fn sum_each(values: Vec<i32>, on_step: impl Fn(i32)) -> i32 {
     let mut total = 0;
     for v in values {
         total += v;
-        let _ = on_step(total);
+        on_step(total);
+    }
+    total
+}
+
+/// Same as `sum_each`, but takes an explicit `ThreadsafeFunction<i32>` — the
+/// other callback form napi supports. Stored, then fired via `.call`.
+#[napi]
+pub fn sum_each_tsfn(values: Vec<i32>, on_step: napi_oop::ThreadsafeFunction<i32>) -> i32 {
+    use napi_oop::ThreadsafeFunctionCallMode::NonBlocking;
+    let mut total = 0;
+    for v in values {
+        total += v;
+        on_step.call(total, NonBlocking);
     }
     total
 }
