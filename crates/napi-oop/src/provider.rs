@@ -49,26 +49,50 @@ pub fn serve(mut stream: Stream) -> io::Result<()> {
     let writer = std::sync::Arc::new(std::sync::Mutex::new(stream.try_clone()?));
     let callbacks: std::sync::Arc<dyn crate::registry::Callbacks> =
         std::sync::Arc::new(ProviderCallbacks { writer: std::sync::Arc::clone(&writer) });
+
+    // A small fixed pool reads requests off a channel, so threads are reused
+    // across calls rather than spawned per request, and don't grow unboundedly.
+    // Replies are matched by correlation id, so out-of-order completion is fine.
+    let (tx, rx) = std::sync::mpsc::channel::<crate::codec::Request>();
+    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+    let pool: Vec<_> = (0..worker_count())
+        .map(|_| {
+            let rx = std::sync::Arc::clone(&rx);
+            let writer = std::sync::Arc::clone(&writer);
+            let callbacks = std::sync::Arc::clone(&callbacks);
+            std::thread::spawn(move || loop {
+                let request = match rx.lock().unwrap().recv() {
+                    Ok(r) => r,
+                    Err(_) => break, // sender dropped: connection closed
+                };
+                let reply = dispatch(request, &callbacks);
+                let _ = write_message(&mut *writer.lock().unwrap(), &reply);
+            })
+        })
+        .collect();
+
     let mut reader = stream;
-    let mut workers = Vec::new();
     loop {
         match read_message(&mut reader)? {
             None => break,
             Some(Message::Request(request)) => {
-                let writer = std::sync::Arc::clone(&writer);
-                let callbacks = std::sync::Arc::clone(&callbacks);
-                workers.push(std::thread::spawn(move || {
-                    let reply = dispatch(request, &callbacks);
-                    let _ = write_message(&mut *writer.lock().unwrap(), &reply);
-                }));
+                if tx.send(request).is_err() {
+                    break;
+                }
             }
             Some(_other) => {}
         }
     }
-    for w in workers {
+    drop(tx);
+    for w in pool {
         let _ = w.join();
     }
     Ok(())
+}
+
+/// Size of the request worker pool: available parallelism, min 1.
+fn worker_count() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
 }
 
 /// The [`Callbacks`] impl handed to each dispatched function: fire-and-forget,
