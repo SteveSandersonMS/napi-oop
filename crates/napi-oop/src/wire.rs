@@ -49,6 +49,25 @@ pub fn from_wire<T: DeserializeOwned>(value: Value) -> Result<T, WireError> {
     rmpv::ext::from_value(value).map_err(|e| WireError(e.to_string()))
 }
 
+/// Key marking a value as a remote callback handle: `{ "__napi_cb": <id> }`.
+/// JS function args become this on the wire; the macro turns it into a Rust
+/// closure that invokes the callback back across the boundary.
+pub const CALLBACK_KEY: &str = "__napi_cb";
+
+/// Extract a callback handle id from its wire marker, or error if not one.
+pub fn callback_handle(value: &Value) -> Result<u64, WireError> {
+    if let Value::Map(entries) = value {
+        for (k, v) in entries {
+            if k.as_str() == Some(CALLBACK_KEY) {
+                if let Some(id) = v.as_u64() {
+                    return Ok(id);
+                }
+            }
+        }
+    }
+    Err(WireError("argument is not a callback handle".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

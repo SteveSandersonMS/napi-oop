@@ -29,6 +29,18 @@ pub async fn multiply_slow(a: i32, b: i32) -> i32 {
     a * b
 }
 
+/// Adds each number, invoking the JS callback once per element with the running
+/// total. Demonstrates a callback param: the closure calls back into Node.
+#[napi]
+pub fn sum_each(values: Vec<i32>, on_step: impl Fn(i32) -> i32) -> i32 {
+    let mut total = 0;
+    for v in values {
+        total += v;
+        let _ = on_step(total);
+    }
+    total
+}
+
 fn main() {
     let mut argv = std::env::args().skip(1);
     let first = argv.next();

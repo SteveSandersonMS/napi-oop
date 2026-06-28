@@ -51,7 +51,9 @@ pub fn rust_to_ts(rust: &str) -> String {
         "String" | "&str" | "str" => "string".to_string(),
         "()" => "void".to_string(),
         other => {
-            if let Some(inner) = strip_generic(other, "Vec") {
+            if let Some(ts) = fn_type_to_ts(other) {
+                ts
+            } else if let Some(inner) = strip_generic(other, "Vec") {
                 format!("Array<{}>", rust_to_ts(inner))
             } else if let Some(inner) = strip_generic(other, "Option") {
                 format!("{} | null", rust_to_ts(inner))
@@ -66,6 +68,24 @@ pub fn rust_to_ts(rust: &str) -> String {
 fn strip_generic<'a>(ty: &'a str, wrapper: &str) -> Option<&'a str> {
     let rest = ty.strip_prefix(wrapper)?.strip_prefix('<')?;
     rest.strip_suffix('>')
+}
+
+/// Map a callback param the macro encoded as `(a0:i32,a1:i32)=>i32` into a TS
+/// function type, mapping each param/return Rust type. `None` if not a fn type.
+fn fn_type_to_ts(ty: &str) -> Option<String> {
+    let (params, ret) = ty.strip_prefix('(')?.split_once(")=>")?;
+    let mapped: Vec<String> = if params.is_empty() {
+        Vec::new()
+    } else {
+        params
+            .split(',')
+            .map(|p| {
+                let (name, t) = p.split_once(':').unwrap_or(("a", p));
+                format!("{name}:{}", rust_to_ts(t))
+            })
+            .collect()
+    };
+    Some(format!("({})=>{}", mapped.join(","), rust_to_ts(ret)))
 }
 
 /// Convert a snake_case Rust name to camelCase, mirroring napi-rs.

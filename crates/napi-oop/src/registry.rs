@@ -10,11 +10,21 @@
 
 use rmpv::Value;
 
-use crate::codec::{ErrorMsg, Message, Request, Response};
+use crate::codec::{ErrorMsg, HandleId, Message, Request, Response};
+
+/// Lets a dispatched function invoke a callback held by the peer (e.g. a JS
+/// function passed as an argument). The macro builds Rust closures that route
+/// through this; the provider runtime implements it over the live connection.
+pub trait Callbacks {
+    /// Invoke the peer-held callback `handle` with `args`, blocking for its
+    /// result. Returns `Err` if the callback or transport fails.
+    fn invoke(&self, handle: HandleId, args: Vec<Value>) -> Result<Value, String>;
+}
 
 /// A type-erased dispatch thunk: decodes args, calls the function, encodes the
-/// result. Returns `Err(message)` if decoding or the call itself fails.
-pub type DispatchFn = fn(Vec<Value>) -> Result<Value, String>;
+/// result. The [`Callbacks`] handle lets the function reach peer callbacks.
+/// Returns `Err(message)` if decoding or the call itself fails.
+pub type DispatchFn = fn(Vec<Value>, &dyn Callbacks) -> Result<Value, String>;
 
 /// One registered `#[napi]` function, collected via [`inventory`].
 pub struct RegisteredFn {
@@ -37,6 +47,16 @@ pub struct RegisteredFn {
 
 inventory::collect!(RegisteredFn);
 
+/// A [`Callbacks`] that errors on any invocation — for fns that take no
+/// callbacks and for tests.
+pub struct NoCallbacks;
+
+impl Callbacks for NoCallbacks {
+    fn invoke(&self, _handle: HandleId, _args: Vec<Value>) -> Result<Value, String> {
+        Err("no callbacks available in this context".to_string())
+    }
+}
+
 /// Look up a registered function by exported name.
 pub fn lookup(name: &str) -> Option<&'static RegisteredFn> {
     inventory::iter::<RegisteredFn>
@@ -53,11 +73,12 @@ pub fn registered_names() -> Vec<String> {
 }
 
 /// Route a [`Request`] to its registered function, producing the reply message
-/// (a [`Message::Response`] on success or [`Message::Error`] on failure).
-pub fn dispatch(request: Request) -> Message {
+/// (a [`Message::Response`] on success or [`Message::Error`] on failure). The
+/// `callbacks` handle lets the function invoke any JS callbacks passed as args.
+pub fn dispatch(request: Request, callbacks: &dyn Callbacks) -> Message {
     let Request { id, function, args } = request;
     match lookup(&function) {
-        Some(registered) => match (registered.dispatch)(args) {
+        Some(registered) => match (registered.dispatch)(args, callbacks) {
             Ok(result) => Message::Response(Response { id, result }),
             Err(message) => Message::Error(ErrorMsg { id, message }),
         },

@@ -37,6 +37,14 @@ async function callAddNumbers(peer: Peer): Promise<void> {
   console.log(
     `[${role}] multiplySlow x2 => ${p}, ${q} in ${Date.now() - t0}ms (concurrent)`
   );
+
+  // Callback param: Rust invokes the JS function once per step (a→b round-trip).
+  const steps: number[] = [];
+  const total = await native.sumEach([10, 20, 30], (running) => {
+    steps.push(running);
+    return running;
+  });
+  console.log(`[${role}] sumEach => ${total}, steps=[${steps.join(', ')}]`);
 }
 
 async function main(): Promise<void> {

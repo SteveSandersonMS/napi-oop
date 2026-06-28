@@ -40,9 +40,14 @@ pub fn provider_hello() -> Hello {
 /// cloned into independent read and write handles (full-duplex), with the writer
 /// shared behind a mutex so responses serialize. Replies may complete out of
 /// order, matched by correlation id on the caller side.
+///
+/// A function may invoke callbacks the peer passed as arguments: the dispatch
+/// thread sends a `CallbackInvoke` and blocks on the matching `CallbackResult`,
+/// which the read loop routes back via a per-call channel.
 pub fn serve(mut stream: Stream) -> io::Result<()> {
     handshake(&mut stream, provider_hello())?;
     let writer = std::sync::Arc::new(std::sync::Mutex::new(stream.try_clone()?));
+    let pending = std::sync::Arc::new(CallbackPending::default());
     let mut reader = stream;
     let mut workers = Vec::new();
     loop {
@@ -50,12 +55,15 @@ pub fn serve(mut stream: Stream) -> io::Result<()> {
             None => break,
             Some(Message::Request(request)) => {
                 let writer = std::sync::Arc::clone(&writer);
+                let pending = std::sync::Arc::clone(&pending);
                 workers.push(std::thread::spawn(move || {
-                    let reply = dispatch(request);
+                    let cb = ProviderCallbacks { writer: &writer, pending: &pending };
+                    let reply = dispatch(request, &cb);
                     let _ = write_message(&mut *writer.lock().unwrap(), &reply);
                 }));
             }
-            // Non-request traffic (callbacks etc.) is added in a later phase.
+            // A callback result arrived: route it to the blocked dispatch thread.
+            Some(Message::CallbackResult(r)) => pending.complete(r.id, Ok(r.result)),
             Some(_other) => {}
         }
     }
@@ -63,6 +71,43 @@ pub fn serve(mut stream: Stream) -> io::Result<()> {
         let _ = w.join();
     }
     Ok(())
+}
+
+/// Outstanding callback invocations, awaiting a `CallbackResult` from the peer.
+#[derive(Default)]
+struct CallbackPending {
+    next: std::sync::atomic::AtomicU64,
+    map: std::sync::Mutex<std::collections::HashMap<u64, std::sync::mpsc::Sender<Result<rmpv::Value, String>>>>,
+}
+
+impl CallbackPending {
+    fn register(&self) -> (u64, std::sync::mpsc::Receiver<Result<rmpv::Value, String>>) {
+        let id = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.map.lock().unwrap().insert(id, tx);
+        (id, rx)
+    }
+    fn complete(&self, id: u64, value: Result<rmpv::Value, String>) {
+        if let Some(tx) = self.map.lock().unwrap().remove(&id) {
+            let _ = tx.send(value);
+        }
+    }
+}
+
+/// The [`Callbacks`] impl handed to each dispatched function: sends a
+/// `CallbackInvoke` and blocks for the matching result.
+struct ProviderCallbacks<'a> {
+    writer: &'a std::sync::Mutex<Stream>,
+    pending: &'a CallbackPending,
+}
+
+impl crate::registry::Callbacks for ProviderCallbacks<'_> {
+    fn invoke(&self, handle: u64, args: Vec<rmpv::Value>) -> Result<rmpv::Value, String> {
+        let (id, rx) = self.pending.register();
+        let msg = Message::CallbackInvoke(crate::codec::CallbackInvoke { id, handle, args });
+        write_message(&mut *self.writer.lock().unwrap(), &msg).map_err(|e| e.to_string())?;
+        rx.recv().map_err(|_| "callback channel closed".to_string())?
+    }
 }
 
 /// Connect to a peer listening at `path` and serve it.

@@ -34,5 +34,31 @@ export interface ErrorMsg {
   message: string;
 }
 
+/** Provider asks the caller to invoke a JS callback it holds by handle id. */
+export interface CallbackInvoke {
+  type: 'callbackInvoke';
+  id: number;
+  handle: number;
+  args: unknown[];
+}
+
+/** The caller's reply to a {@link CallbackInvoke}. */
+export interface CallbackResult {
+  type: 'callbackResult';
+  id: number;
+  result: unknown;
+}
+
+/** Releases a callback handle so the holder can drop it. */
+export interface Release {
+  type: 'release';
+  handle: number;
+}
+
 /** Any message that may arrive from the peer. */
-export type Message = Hello | Request | Response | ErrorMsg;
+export type Message = Hello | Request | Response | ErrorMsg | CallbackInvoke | CallbackResult | Release;
+
+/** Wire marker replacing a JS function arg: `{ __napi_cb: <handle id> }`. */
+export interface CallbackRef {
+  __napi_cb: number;
+}

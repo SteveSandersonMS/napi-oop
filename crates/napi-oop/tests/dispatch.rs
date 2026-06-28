@@ -36,12 +36,24 @@ pub async fn slow_double(n: i32) -> i32 {
     n * 2
 }
 
+/// A callback param: the macro decodes a handle marker and builds a closure that
+/// routes through the `Callbacks` table. Sums values, calling back each step.
+#[napi]
+pub fn sum_each(values: Vec<i32>, on_step: impl Fn(i32) -> i32) -> i32 {
+    let mut total = 0;
+    for v in values {
+        total += v;
+        let _ = on_step(total);
+    }
+    total
+}
+
 fn call(function: &str, id: u64, args: Vec<Value>) -> Message {
     registry::dispatch(Request {
         id,
         function: function.to_string(),
         args,
-    })
+    }, &registry::NoCallbacks)
 }
 
 #[test]
@@ -125,4 +137,40 @@ fn manifest_flags_async_from_keyword_not_return_type() {
     assert_eq!(f.ret, "number");
     let sync = m.functions.iter().find(|f| f.rust_name == "add_numbers").unwrap();
     assert!(!sync.is_async);
+}
+
+/// Records every callback invocation and echoes each arg straight back.
+struct RecordingCallbacks {
+    steps: std::sync::Mutex<Vec<i64>>,
+}
+
+impl registry::Callbacks for RecordingCallbacks {
+    fn invoke(&self, _handle: u64, args: Vec<Value>) -> Result<Value, String> {
+        let v = args[0].as_i64().unwrap();
+        self.steps.lock().unwrap().push(v);
+        Ok(args.into_iter().next().unwrap())
+    }
+}
+
+#[test]
+fn callback_param_invokes_through_callbacks_table() {
+    let cb = RecordingCallbacks { steps: std::sync::Mutex::new(Vec::new()) };
+    let values = Value::Array(vec![Value::from(10i64), Value::from(20i64), Value::from(30i64)]);
+    let handle = Value::Map(vec![(Value::from("__napi_cb"), Value::from(7u64))]);
+    let reply = registry::dispatch(
+        Request { id: 1, function: "sum_each".into(), args: vec![values, handle] },
+        &cb,
+    );
+    match reply {
+        Message::Response(r) => assert_eq!(r.result.as_i64(), Some(60)),
+        other => panic!("expected response, got {other:?}"),
+    }
+    assert_eq!(*cb.steps.lock().unwrap(), vec![10, 30, 60]);
+}
+
+#[test]
+fn callback_manifest_renders_ts_fn_type() {
+    let m = napi_oop::manifest::manifest();
+    let f = m.functions.iter().find(|f| f.rust_name == "sum_each").unwrap();
+    assert_eq!(f.params, vec!["Array<number>", "(a0:number)=>number"]);
 }

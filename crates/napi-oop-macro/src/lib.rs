@@ -78,16 +78,39 @@ mod out_of_proc {
         let arity = arg_types.len();
         let arg_idents: Vec<_> = (0..arity).map(|i| format_ident!("__arg{i}")).collect();
         let decode_args = arg_idents.iter().zip(arg_types.iter()).map(|(ident, ty)| {
-            quote! {
-                let #ident: #ty = ::napi_oop::wire::from_wire(__iter.next().unwrap())
-                    .map_err(|e| ::std::string::ToString::to_string(&e))?;
+            if let Some((inputs, output)) = fn_trait_sig(ty) {
+                // Callback param: the wire value is a handle marker; build a Rust
+                // closure that invokes the peer's callback through `__cb`.
+                let cb_args: Vec<_> = (0..inputs.len()).map(|i| format_ident!("__c{i}")).collect();
+                quote! {
+                    let #ident = {
+                        let __h = ::napi_oop::wire::callback_handle(&__iter.next().unwrap())
+                            .map_err(|e| ::std::string::ToString::to_string(&e))?;
+                        move |#(#cb_args: #inputs),*| -> #output {
+                            let __r = __cb.invoke(__h, ::std::vec![
+                                #(::napi_oop::wire::to_wire(&#cb_args).unwrap()),*
+                            ]).expect("callback failed");
+                            ::napi_oop::wire::from_wire(__r).expect("decode callback result")
+                        }
+                    };
+                }
+            } else {
+                quote! {
+                    let #ident: #ty = ::napi_oop::wire::from_wire(__iter.next().unwrap())
+                        .map_err(|e| ::std::string::ToString::to_string(&e))?;
+                }
             }
         });
 
-        // Stringify each Rust type for the manifest the TS generator consumes.
+        // Stringify each Rust type for the manifest the TS generator consumes;
+        // callback params become a TS function-type string the generator passes
+        // through verbatim.
         let param_type_strs: Vec<String> = arg_types
             .iter()
-            .map(|ty| quote!(#ty).to_string().split_whitespace().collect())
+            .map(|ty| match fn_trait_sig(ty) {
+                Some((inputs, output)) => ts_fn_type(&inputs, &output),
+                None => quote!(#ty).to_string().split_whitespace().collect(),
+            })
             .collect();
         let ret_type_str: String = match &func.sig.output {
             syn::ReturnType::Default => "()".to_string(),
@@ -110,6 +133,7 @@ mod out_of_proc {
             const _: () = {
                 fn __napi_oop_dispatch(
                     __args: ::std::vec::Vec<::napi_oop::rmpv::Value>,
+                    __cb: &dyn ::napi_oop::registry::Callbacks,
                 ) -> ::core::result::Result<::napi_oop::rmpv::Value, ::std::string::String> {
                     if __args.len() != #arity {
                         return ::core::result::Result::Err(::std::format!(
@@ -140,5 +164,46 @@ mod out_of_proc {
         };
 
         expanded.into()
+    }
+
+    /// If `ty` is `impl Fn(A, B, …) -> R` (or FnMut/FnOnce), return its input
+    /// types and return type. Used to recognise callback params.
+    fn fn_trait_sig(ty: &syn::Type) -> Option<(Vec<syn::Type>, syn::Type)> {
+        let bounds = match ty {
+            syn::Type::ImplTrait(it) => &it.bounds,
+            _ => return None,
+        };
+        for bound in bounds {
+            if let syn::TypeParamBound::Trait(tb) = bound {
+                let seg = tb.path.segments.last()?;
+                if !matches!(seg.ident.to_string().as_str(), "Fn" | "FnMut" | "FnOnce") {
+                    continue;
+                }
+                if let syn::PathArguments::Parenthesized(p) = &seg.arguments {
+                    let inputs: Vec<syn::Type> = p.inputs.iter().cloned().collect();
+                    let output = match &p.output {
+                        syn::ReturnType::Type(_, t) => (**t).clone(),
+                        syn::ReturnType::Default => syn::parse_quote!(()),
+                    };
+                    return Some((inputs, output));
+                }
+            }
+        }
+        None
+    }
+
+    /// Render a TS function-type string (`(a0: T, …) => R`) for a callback param,
+    /// reusing the runtime's Rust→TS scalar mapping by re-stringifying the types.
+    fn ts_fn_type(inputs: &[syn::Type], output: &syn::Type) -> String {
+        let params: Vec<String> = inputs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let ts: String = quote!(#t).to_string().split_whitespace().collect();
+                format!("a{i}:{ts}")
+            })
+            .collect();
+        let ret: String = quote!(#output).to_string().split_whitespace().collect();
+        format!("({})=>{}", params.join(","), ret)
     }
 }
