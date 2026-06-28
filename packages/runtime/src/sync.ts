@@ -6,9 +6,9 @@
 // real call, posts the result over a MessagePort, then notifies; the main
 // thread wakes and pulls the (unbounded) result with `receiveMessageOnPort`.
 //
-// One call is in flight at a time, which matches synchronous semantics. Nested
-// callbacks (Rust calling back into Node while we block) are a Phase 7 concern;
-// the message pump here will be extended to service them.
+// One call is in flight at a time, which matches synchronous semantics. Passing
+// a JS callback isn't supported here: a callback would need the event loop to
+// run, but the main thread is blocked, so `call` rejects callback args up front.
 
 import { receiveMessageOnPort, MessageChannel, Worker } from 'worker_threads';
 import { join } from 'path';
@@ -64,6 +64,13 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
   return {
     call(fn, args) {
       if (closed) throw new Error('provider is closed');
+      if (args.some((a) => typeof a === 'function')) {
+        throw new Error(
+          `sync binding cannot pass a callback to '${fn}': callbacks need the event ` +
+            'loop, which is blocked in sync mode. Use the async binding for functions ' +
+            'that take a callback.'
+        );
+      }
       port1.postMessage({ fn, args });
       const msg = waitForResult() as { ok: true; result: unknown } | { ok: false; error: string };
       if (msg.ok) return msg.result;
