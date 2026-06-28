@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/napi-oop",
     "crates/napi-oop-macro",
+    "crates/napi-oop-facade",
     "examples/add-numbers",
     "examples/tokio-fetch",
 ]

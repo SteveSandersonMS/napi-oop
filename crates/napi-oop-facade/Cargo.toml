@@ -1,0 +1,23 @@
+[package]
+name = "napi-oop-facade"
+description = "Drop-in `napi` path: existing #[napi] source uses `napi::...`; out-of-proc routes it to napi-oop."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# Compiled as `napi` so unmodified napi-rs source (`use napi::ThreadsafeFunction`,
+# `napi::bindgen_prelude::*`) resolves to napi-oop's shim out-of-process.
+[lib]
+name = "napi"
+path = "src/lib.rs"
+
+[features]
+default = ["in-proc"]
+in-proc = ["napi-oop-macro/in-proc"]
+out-of-proc = ["napi-oop-macro/out-of-proc"]
+
+[dependencies]
+napi-oop = { path = "../napi-oop" }
+napi-oop-macro = { path = "../napi-oop-macro", default-features = false }

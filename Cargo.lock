@@ -7,7 +7,7 @@ name = "add-numbers-example"
 version = "0.1.0"
 dependencies = [
  "napi-oop",
- "napi-oop-macro",
+ "napi-oop-facade",
 ]
 
 [[package]]
@@ -75,6 +75,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "napi-oop-facade"
+version = "0.1.0"
+dependencies = [
+ "napi-oop",
+ "napi-oop-macro",
 ]
 
 [[package]]

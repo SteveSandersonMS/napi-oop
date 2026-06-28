@@ -10,4 +10,4 @@ path = "src/main.rs"
 
 [dependencies]
 napi-oop = { path = "../../crates/napi-oop" }
-napi-oop-macro = { path = "../../crates/napi-oop-macro", features = ["out-of-proc"] }
+napi = { package = "napi-oop-facade", path = "../../crates/napi-oop-facade", features = ["out-of-proc"] }

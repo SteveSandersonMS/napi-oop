@@ -12,7 +12,7 @@ use std::process::Command;
 
 use napi_oop::bootstrap::SOCKET_ENV;
 use napi_oop::provider::{serve_from_env, spawn_and_serve};
-use napi_oop_macro::napi;
+use napi::napi;
 
 /// Adds two numbers and returns the result.
 #[napi]
@@ -45,8 +45,8 @@ pub fn sum_each(values: Vec<i32>, on_step: impl Fn(i32)) -> i32 {
 /// Same as `sum_each`, but takes an explicit `ThreadsafeFunction<i32>` — the
 /// other callback form napi supports. Stored, then fired via `.call`.
 #[napi]
-pub fn sum_each_tsfn(values: Vec<i32>, on_step: napi_oop::ThreadsafeFunction<i32>) -> i32 {
-    use napi_oop::ThreadsafeFunctionCallMode::NonBlocking;
+pub fn sum_each_tsfn(values: Vec<i32>, on_step: napi::ThreadsafeFunction<i32>) -> i32 {
+    use napi::ThreadsafeFunctionCallMode::NonBlocking;
     let mut total = 0;
     for v in values {
         total += v;
