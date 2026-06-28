@@ -1,15 +1,49 @@
 //! The duplex byte channel between the two peers.
 //!
-//! Phase 2 adds the concrete **named local socket** implementation (Unix domain
-//! socket on Linux/macOS, named pipe on Windows). stdio is intentionally never
-//! used, since the child process may need stdout/stderr for its own output.
+//! Implemented as a **named local socket**: a Unix domain socket on Linux/macOS
+//! and a named pipe on Windows, via the `interprocess` crate. stdio is
+//! intentionally never used, since the child process may need stdout/stderr for
+//! its own output.
+//!
+//! The bootstrap (who generates the path, who spawns whom) is symmetric and is
+//! handled in a later phase; here we just listen/connect at a given path.
 
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
+
+use interprocess::local_socket::prelude::*;
+use interprocess::local_socket::{GenericFilePath, Listener, ListenerOptions, Stream};
 
 /// A bidirectional, ordered byte stream connecting the Node and Rust peers.
 ///
 /// Any `Read + Write + Send` type qualifies, so tests can use in-memory pipes
-/// and production can use the named-socket transport (Phase 2).
+/// and production uses the named-socket [`Stream`].
 pub trait Transport: Read + Write + Send {}
 
 impl<T: Read + Write + Send> Transport for T {}
+
+/// A listening named local socket. The parent side binds this and accepts the
+/// child's connection.
+pub struct NamedSocketListener {
+    inner: Listener,
+}
+
+impl NamedSocketListener {
+    /// Block until a peer connects, returning the connected stream.
+    pub fn accept(&self) -> io::Result<Stream> {
+        self.inner.accept()
+    }
+}
+
+/// Bind a listener at the given filesystem socket path (Unix) / pipe path
+/// (Windows).
+pub fn listen(path: &str) -> io::Result<NamedSocketListener> {
+    let name = path.to_fs_name::<GenericFilePath>()?;
+    let inner = ListenerOptions::new().name(name).create_sync()?;
+    Ok(NamedSocketListener { inner })
+}
+
+/// Connect to a listener bound at the given path.
+pub fn connect(path: &str) -> io::Result<Stream> {
+    let name = path.to_fs_name::<GenericFilePath>()?;
+    Stream::connect(name)
+}
