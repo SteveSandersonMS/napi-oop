@@ -1,0 +1,6 @@
+node_modules/
+src/rust/target/
+dist/
+src/ts/generated/*.node
+src/ts/generated/index.js
+src/ts/generated/index.d.ts

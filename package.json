@@ -1,0 +1,22 @@
+{
+  "name": "napi-pipe",
+  "version": "0.1.0",
+  "description": "Minimal napi-rs example: a TypeScript entrypoint calling a Rust add_numbers function",
+  "main": "dist/main.js",
+  "napi": {
+    "name": "napi-pipe"
+  },
+  "scripts": {
+    "build:native": "napi build --platform --release --cargo-cwd src/rust --dts index.d.ts src/ts/generated",
+    "build:native:debug": "napi build --platform --cargo-cwd src/rust --dts index.d.ts src/ts/generated",
+    "build:ts": "tsc",
+    "build:copy": "cp src/ts/generated/*.node dist/generated/",
+    "build": "npm run build:native && npm run build:ts && npm run build:copy",
+    "start": "node dist/main.js"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}
