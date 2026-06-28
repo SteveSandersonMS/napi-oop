@@ -12,3 +12,7 @@ interprocess = "2"
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
 rmpv = { version = "1", features = ["with-serde"] }
+inventory = "0.3"
+
+[dev-dependencies]
+napi-oop-macro = { path = "../napi-oop-macro", features = ["out-of-proc"] }

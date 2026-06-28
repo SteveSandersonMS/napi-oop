@@ -3,13 +3,12 @@
 //! The same annotated source builds two ways, selected by cargo feature:
 //!
 //! - **`in-proc`** (default): behave like a normal in-process napi-rs build.
-//!   Phase 3 will delegate to napi-rs's real `#[napi]`.
-//! - **`out-of-proc`**: emit out-of-process remoting glue — a wire-codec
+//!   For now the item is passed through unchanged (a real build pairs this crate
+//!   with napi-rs's own `#[napi]`); a later phase delegates explicitly.
+//! - **`out-of-proc`**: emit out-of-process remoting glue — a serde/wire-codec
 //!   dispatch thunk plus a registry entry the runtime advertises to Node.
-//!   Phase 3 implements the codegen.
 //!
-//! For now (Phase 1 scaffolding) both modes pass the item through unchanged;
-//! only the build-mode *plumbing* is in place.
+//! The user's source is identical in both modes; only the generated glue differs.
 
 use proc_macro::TokenStream;
 
@@ -31,8 +30,8 @@ pub fn napi(_attr: TokenStream, item: TokenStream) -> TokenStream {
 mod in_proc {
     use proc_macro::TokenStream;
 
-    /// In-process mode. Phase 3: delegate to napi-rs's `#[napi]`. For now,
-    /// pass the annotated item through unchanged.
+    /// In-process mode. Pass the annotated item through unchanged; a real build
+    /// layers napi-rs's `#[napi]` for the in-process binding.
     pub(super) fn expand(_attr: TokenStream, item: TokenStream) -> TokenStream {
         item
     }
@@ -41,10 +40,73 @@ mod in_proc {
 #[cfg(feature = "out-of-proc")]
 mod out_of_proc {
     use proc_macro::TokenStream;
+    use quote::{format_ident, quote};
+    use syn::{parse_macro_input, FnArg, ItemFn, PatType};
 
-    /// Out-of-process mode. Phase 3: emit the wire-codec dispatch thunk and a
-    /// `napi-oop` registry entry. For now, pass the item through unchanged.
+    /// Out-of-process mode: keep the original function and additionally emit a
+    /// dispatch thunk (decode args via the wire codec, call, encode result) plus
+    /// an [`inventory`] registration of it under the function's name.
     pub(super) fn expand(_attr: TokenStream, item: TokenStream) -> TokenStream {
-        item
+        let func = parse_macro_input!(item as ItemFn);
+        let fn_name = func.sig.ident.clone();
+        let fn_name_str = fn_name.to_string();
+
+        // Collect the (typed) argument types; methods aren't supported yet.
+        let mut arg_types = Vec::new();
+        for input in &func.sig.inputs {
+            match input {
+                FnArg::Typed(PatType { ty, .. }) => arg_types.push((**ty).clone()),
+                FnArg::Receiver(receiver) => {
+                    return syn::Error::new_spanned(
+                        receiver,
+                        "#[napi] out-of-proc mode does not support methods (`self`) yet",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+            }
+        }
+
+        let arity = arg_types.len();
+        let arg_idents: Vec<_> = (0..arity).map(|i| format_ident!("__arg{i}")).collect();
+        let decode_args = arg_idents.iter().zip(arg_types.iter()).map(|(ident, ty)| {
+            quote! {
+                let #ident: #ty = ::napi_oop::wire::from_wire(__iter.next().unwrap())
+                    .map_err(|e| ::std::string::ToString::to_string(&e))?;
+            }
+        });
+
+        let expanded = quote! {
+            #func
+
+            const _: () = {
+                fn __napi_oop_dispatch(
+                    __args: ::std::vec::Vec<::napi_oop::rmpv::Value>,
+                ) -> ::core::result::Result<::napi_oop::rmpv::Value, ::std::string::String> {
+                    if __args.len() != #arity {
+                        return ::core::result::Result::Err(::std::format!(
+                            "{} expected {} argument(s), got {}",
+                            #fn_name_str,
+                            #arity,
+                            __args.len(),
+                        ));
+                    }
+                    let mut __iter = __args.into_iter();
+                    #(#decode_args)*
+                    let __ret = #fn_name(#(#arg_idents),*);
+                    ::napi_oop::wire::to_wire(&__ret)
+                        .map_err(|e| ::std::string::ToString::to_string(&e))
+                }
+
+                ::napi_oop::inventory::submit! {
+                    ::napi_oop::registry::RegisteredFn {
+                        name: #fn_name_str,
+                        dispatch: __napi_oop_dispatch,
+                    }
+                }
+            };
+        };
+
+        expanded.into()
     }
 }

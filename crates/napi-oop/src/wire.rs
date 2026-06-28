@@ -1,34 +1,84 @@
 //! Serialization of values that cross the process boundary.
 //!
-//! Analogous to napi-rs's `ToNapiValue`/`FromNapiValue`, but instead of
-//! converting to/from in-process `napi_value` handles, these convert to/from
-//! the wire format. Phase 3 implements them for primitives (starting with the
-//! `i32`s used by `add_numbers`); Phase 8 generalizes to strings, structs,
-//! enums, `Buffer`, `Option`/`Result`, etc., and adds remote handles for
-//! non-serializable values (the B-style fallback).
+//! Rather than hand-writing a codec for every type, we lean on **serde**: any
+//! type that is `Serialize`/`DeserializeOwned` can cross the boundary for free
+//! (including everything you get from `#[derive(Serialize, Deserialize)]` —
+//! structs, enums, `Vec`, `Option`, maps, …). The on-wire form is MessagePack
+//! (see [`crate::codec`]); here we bridge a value to/from the dynamic
+//! [`rmpv::Value`] carried in a [`crate::codec::Request`]/[`crate::codec::Response`].
+//!
+//! [`ToWire`]/[`FromWire`] are therefore just blanket *aliases* over serde — they
+//! document the boundary and give a single place to hang future bounds. The only
+//! values serde alone can't carry are **live references** (callbacks, remote
+//! handles): those are handled by giving the relevant napi types custom serde
+//! impls that encode a handle id (added in the callbacks/handles phase), so the
+//! user's `#[napi]` source still never changes.
 
-/// A value that can be serialized into the wire buffer.
-pub trait ToWire {
-    /// Append this value's encoding to `out`.
-    fn to_wire(&self, out: &mut Vec<u8>);
-}
+use rmpv::Value;
+use serde::{de::DeserializeOwned, Serialize};
 
-/// A value that can be deserialized from the wire buffer.
-pub trait FromWire: Sized {
-    /// Decode a value from `buf`, returning it and the number of bytes consumed.
-    fn from_wire(buf: &[u8]) -> Result<(Self, usize), WireError>;
-}
+/// Any value that can be serialized onto the wire. Blanket-implemented for every
+/// [`serde::Serialize`] type — no per-type impl required.
+pub trait ToWire: Serialize {}
+impl<T: Serialize + ?Sized> ToWire for T {}
 
-/// Error raised while decoding a value from the wire.
+/// Any value that can be deserialized from the wire. Blanket-implemented for
+/// every [`serde::de::DeserializeOwned`] type.
+pub trait FromWire: DeserializeOwned {}
+impl<T: DeserializeOwned> FromWire for T {}
+
+/// Error raised while converting a value to/from the wire representation.
 #[derive(Debug)]
 pub struct WireError(pub String);
 
 impl std::fmt::Display for WireError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "wire decode error: {}", self.0)
+        write!(f, "wire conversion error: {}", self.0)
     }
 }
 
 impl std::error::Error for WireError {}
 
-// TODO(phase3): impl ToWire/FromWire for i32 (and other primitives).
+/// Encode a value into the dynamic wire representation.
+pub fn to_wire<T: Serialize + ?Sized>(value: &T) -> Result<Value, WireError> {
+    rmpv::ext::to_value(value).map_err(|e| WireError(e.to_string()))
+}
+
+/// Decode a value from the dynamic wire representation.
+pub fn from_wire<T: DeserializeOwned>(value: Value) -> Result<T, WireError> {
+    rmpv::ext::from_value(value).map_err(|e| WireError(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[test]
+    fn primitives_round_trip() {
+        let v = to_wire(&5i32).unwrap();
+        assert_eq!(from_wire::<i32>(v).unwrap(), 5);
+
+        let v = to_wire("hello").unwrap();
+        assert_eq!(from_wire::<String>(v).unwrap(), "hello");
+    }
+
+    #[test]
+    fn derived_struct_round_trips_for_free() {
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+        let p = Point { x: 1, y: -2 };
+        let v = to_wire(&p).unwrap();
+        assert_eq!(from_wire::<Point>(v).unwrap(), p);
+    }
+
+    #[test]
+    fn collections_round_trip() {
+        let xs = vec![Some(1u8), None, Some(3)];
+        let v = to_wire(&xs).unwrap();
+        assert_eq!(from_wire::<Vec<Option<u8>>>(v).unwrap(), xs);
+    }
+}
