@@ -10,8 +10,11 @@
 //! exit, which side is parent) is the application's concern — see the
 //! `add-numbers` example's `main.rs`.
 
-use std::io::{self, Read, Write};
+use std::io;
 use std::process::Command;
+
+use interprocess::local_socket::Stream;
+use interprocess::TryClone;
 
 use crate::bootstrap::{cleanup_socket_path, generate_socket_path, SOCKET_ENV};
 use crate::codec::{read_message, write_message, Hello, Message, Role};
@@ -31,19 +34,35 @@ pub fn provider_hello() -> Hello {
 }
 
 /// Handshake, then serve requests on a connected stream until the peer closes.
-pub fn serve<S: Read + Write>(mut stream: S) -> io::Result<()> {
+///
+/// Requests are dispatched **concurrently**: each runs on its own thread, so a
+/// slow (e.g. `async`) call doesn't head-of-line-block others. The stream is
+/// cloned into independent read and write handles (full-duplex), with the writer
+/// shared behind a mutex so responses serialize. Replies may complete out of
+/// order, matched by correlation id on the caller side.
+pub fn serve(mut stream: Stream) -> io::Result<()> {
     handshake(&mut stream, provider_hello())?;
+    let writer = std::sync::Arc::new(std::sync::Mutex::new(stream.try_clone()?));
+    let mut reader = stream;
+    let mut workers = Vec::new();
     loop {
-        match read_message(&mut stream)? {
-            None => return Ok(()),
+        match read_message(&mut reader)? {
+            None => break,
             Some(Message::Request(request)) => {
-                let reply = dispatch(request);
-                write_message(&mut stream, &reply)?;
+                let writer = std::sync::Arc::clone(&writer);
+                workers.push(std::thread::spawn(move || {
+                    let reply = dispatch(request);
+                    let _ = write_message(&mut *writer.lock().unwrap(), &reply);
+                }));
             }
             // Non-request traffic (callbacks etc.) is added in a later phase.
             Some(_other) => {}
         }
     }
+    for w in workers {
+        let _ = w.join();
+    }
+    Ok(())
 }
 
 /// Connect to a peer listening at `path` and serve it.

@@ -27,8 +27,12 @@ pub struct RegisteredFn {
     pub params: &'static [&'static str],
     /// The declared name of each parameter, in order (e.g. `["a","b"]`).
     pub param_names: &'static [&'static str],
-    /// The Rust return type (e.g. `"i64"`).
+    /// The Rust return type (e.g. `"i64"`). For an `async fn`, this is the
+    /// unwrapped `Output` type; the generator wraps it in `Promise<>`.
     pub ret: &'static str,
+    /// Whether the function is `async`. Async fns surface as `Promise<T>` on TS
+    /// in *both* the async and sync bindings (sync mode must not hide async).
+    pub is_async: bool,
 }
 
 inventory::collect!(RegisteredFn);

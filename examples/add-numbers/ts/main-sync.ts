@@ -1,7 +1,6 @@
-// Synchronous variant: identical add_numbers call, but blocking — no Promises.
-//
-// A worker thread owns the socket and the Rust provider; the main thread blocks
-// until each result is ready. Node is always the parent here.
+// Synchronous variant: sync `add_numbers` blocks for a value; the async Rust fn
+// stays a Promise even here. A worker thread owns the socket; the main thread
+// blocks for sync calls. Node is always the parent.
 
 import { join } from 'path';
 
@@ -13,11 +12,21 @@ function providerCommand(): string {
   return join(__dirname, '..', '..', '..', 'target', 'release', 'add-numbers-provider');
 }
 
-const provider = launchProviderSync({ command: providerCommand() });
-try {
-  const native = bindSync(provider);
-  const result = native.addNumbers(2, 3);
-  console.log(`[node-parent:sync] addNumbers(2, 3) = ${result}`);
-} finally {
-  provider.close();
+async function main(): Promise<void> {
+  const provider = launchProviderSync({ command: providerCommand() });
+  try {
+    const native = bindSync(provider);
+    const result = native.addNumbers(2, 3);
+    console.log(`[node-parent:sync] addNumbers(2, 3) = ${result}`);
+    // Even under sync bindings, an async Rust fn stays a Promise — must await it.
+    const product = await native.multiplySlow(6, 7);
+    console.log(`[node-parent:sync] await multiplySlow(6, 7) = ${product}`);
+  } finally {
+    provider.close();
+  }
 }
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

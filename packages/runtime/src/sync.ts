@@ -91,8 +91,18 @@ export function connectFromEnvSync(): SyncProvider {
   return spawnSyncProvider('connectEnv', { command: '' });
 }
 
-/** Wrap a [`SyncProvider`] as a typed object of synchronous functions. */
-export function createSyncBinding<T extends object>(provider: SyncProvider): T {
+/**
+ * Wrap a [`SyncProvider`] as a typed object of synchronous functions. Sync calls
+ * block and return the value directly. Functions whose names are in `asyncFns`
+ * are Rust `async` fns: sync bindings must not hide their asynchrony, so the
+ * (still-blocking) result is wrapped in a resolved `Promise<T>` to honor the
+ * `Promise`-typed signature.
+ */
+export function createSyncBinding<T extends object>(
+  provider: SyncProvider,
+  asyncFns: readonly string[] = []
+): T {
+  const asyncSet = new Set(asyncFns);
   const cache = new Map<string, (...args: unknown[]) => unknown>();
   return new Proxy({} as T, {
     get(_target, property) {
@@ -100,7 +110,9 @@ export function createSyncBinding<T extends object>(provider: SyncProvider): T {
       let fn = cache.get(property);
       if (!fn) {
         const wireName = camelToSnake(property);
-        fn = (...args: unknown[]) => provider.call(wireName, args);
+        const isAsync = asyncSet.has(property);
+        fn = (...args: unknown[]) =>
+          isAsync ? Promise.resolve(provider.call(wireName, args)) : provider.call(wireName, args);
         cache.set(property, fn);
       }
       return fn;

@@ -30,6 +30,12 @@ pub fn manhattan(p: Point) -> i32 {
     p.x.abs() + p.y.abs()
 }
 
+/// Async fns dispatch through the generated `block_on`, returning a plain value.
+#[napi]
+pub async fn slow_double(n: i32) -> i32 {
+    n * 2
+}
+
 fn call(function: &str, id: u64, args: Vec<Value>) -> Message {
     registry::dispatch(Request {
         id,
@@ -99,4 +105,24 @@ fn bad_argument_type_is_an_error() {
         Message::Error(e) => assert_eq!(e.id, 6),
         other => panic!("expected error, got {other:?}"),
     }
+}
+
+#[test]
+fn dispatches_async_function_via_block_on() {
+    match call("slow_double", 7, vec![Value::from(21i64)]) {
+        Message::Response(r) => assert_eq!(r.result.as_i64(), Some(42)),
+        other => panic!("expected response, got {other:?}"),
+    }
+}
+
+#[test]
+fn manifest_flags_async_from_keyword_not_return_type() {
+    let m = napi_oop::manifest::manifest();
+    let f = m.functions.iter().find(|f| f.rust_name == "slow_double").unwrap();
+    // Return type is the unwrapped `i32` -> `number`, but the fn is marked async
+    // purely from the `async` keyword on its signature.
+    assert!(f.is_async);
+    assert_eq!(f.ret, "number");
+    let sync = m.functions.iter().find(|f| f.rust_name == "add_numbers").unwrap();
+    assert!(!sync.is_async);
 }

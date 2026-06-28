@@ -20,6 +20,15 @@ pub fn add_numbers(a: i32, b: i32) -> i32 {
     a + b
 }
 
+/// Multiplies two numbers after an async delay — demonstrates an `async fn`,
+/// which surfaces as `Promise<number>` on TS in both binding modes. Concurrent
+/// calls overlap their delays rather than running serially.
+#[napi]
+pub async fn multiply_slow(a: i32, b: i32) -> i32 {
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    a * b
+}
+
 fn main() {
     let mut argv = std::env::args().skip(1);
     let first = argv.next();

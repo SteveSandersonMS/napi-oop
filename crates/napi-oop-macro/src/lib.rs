@@ -94,6 +94,16 @@ mod out_of_proc {
             syn::ReturnType::Type(_, ty) => quote!(#ty).to_string().split_whitespace().collect(),
         };
 
+        // Async Rust fns surface as async on TS in *both* binding modes. The
+        // dispatch thunk drives the future to completion; the manifest marks the
+        // fn async so the generator emits `Promise<T>` even for the sync binding.
+        let is_async = func.sig.asyncness.is_some();
+        let call_expr = if is_async {
+            quote! { ::napi_oop::block_on(#fn_name(#(#arg_idents),*)) }
+        } else {
+            quote! { #fn_name(#(#arg_idents),*) }
+        };
+
         let expanded = quote! {
             #func
 
@@ -111,7 +121,7 @@ mod out_of_proc {
                     }
                     let mut __iter = __args.into_iter();
                     #(#decode_args)*
-                    let __ret = #fn_name(#(#arg_idents),*);
+                    let __ret = #call_expr;
                     ::napi_oop::wire::to_wire(&__ret)
                         .map_err(|e| ::std::string::ToString::to_string(&e))
                 }
@@ -123,6 +133,7 @@ mod out_of_proc {
                         params: &[#(#param_type_strs),*],
                         param_names: &[#(#arg_names),*],
                         ret: #ret_type_str,
+                        is_async: #is_async,
                     }
                 }
             };

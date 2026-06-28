@@ -68,3 +68,12 @@ The Rust `#[napi]` signatures are the IDL. The provider prints a type manifest
 caller never hand-writes interfaces. The example regenerates them in its
 `build:types` step, then imports `bind(peer)` / `bindSync(provider)`.
 
+### Async Rust + concurrency
+
+`async fn` providers are detected from the `async` keyword and dispatched
+concurrently — each call runs on its own thread, so overlapping calls overlap
+their latency. The manifest marks them async, so they surface as `Promise<T>` in
+**both** the async and sync bindings: a sync binding never hides asynchrony.
+`multiplySlow` in the example proves two 200ms calls finish in ~200ms.
+
+

@@ -29,6 +29,14 @@ async function callAddNumbers(peer: Peer): Promise<void> {
   const result = await native.addNumbers(a, b);
   const role = process.env[SOCKET_ENV] ? 'rust-parent' : 'node-parent';
   console.log(`[${role}] addNumbers(${a}, ${b}) = ${result}`);
+
+  // Async Rust fn, called concurrently: two 200ms calls overlap (~200ms total,
+  // not ~400ms), proving concurrent dispatch.
+  const t0 = Date.now();
+  const [p, q] = await Promise.all([native.multiplySlow(6, 7), native.multiplySlow(8, 9)]);
+  console.log(
+    `[${role}] multiplySlow x2 => ${p}, ${q} in ${Date.now() - t0}ms (concurrent)`
+  );
 }
 
 async function main(): Promise<void> {

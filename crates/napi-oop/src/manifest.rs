@@ -30,6 +30,9 @@ pub struct FnSignature {
     pub params: Vec<String>,
     /// Return TypeScript type (unwrapped; the generator adds `Promise<>` if async).
     pub ret: String,
+    /// Whether the Rust fn is async — surfaced as `Promise<T>` on TS in both
+    /// binding modes.
+    pub is_async: bool,
 }
 
 /// The full set of exposed functions, ready to serialize for the TS generator.
@@ -92,6 +95,7 @@ pub fn manifest() -> Manifest {
             param_names: f.param_names.iter().map(|n| snake_to_camel(n)).collect(),
             params: f.params.iter().map(|t| rust_to_ts(t)).collect(),
             ret: rust_to_ts(f.ret),
+            is_async: f.is_async,
         })
         .collect();
     Manifest { functions }

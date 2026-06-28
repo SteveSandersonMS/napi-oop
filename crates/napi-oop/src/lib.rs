@@ -27,6 +27,10 @@ pub mod bootstrap;
 pub use inventory;
 pub use rmpv;
 
+// Drives `async fn` providers to completion inside the sync dispatch thunk. Each
+// request runs on its own thread, so blocking here still allows concurrent calls.
+pub use pollster::block_on;
+
 /// Convenience re-exports for the common surface.
 pub mod prelude {
     pub use crate::manifest::{manifest, manifest_json};
