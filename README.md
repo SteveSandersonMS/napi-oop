@@ -7,7 +7,8 @@ implementation plan for the architecture and roadmap.
 > Status: the out-of-process path works end to end, with a **symmetric
 > bootstrap** — either Node or Rust may be the parent that spawns the other.
 > Node `await`s calls to `#[napi]` functions over a named socket
-> (`await addNumbers(2, 3) === 5`). See the example.
+> (`await addNumbers(2, 3) === 5`), or calls them **synchronously** via a
+> worker-backed blocking variant. See the example.
 
 ## Repository layout
 
@@ -52,6 +53,7 @@ npm run build -w @napi-oop/example-add-numbers  # build the example (cargo + tsc
 # Run it (symmetric bootstrap — either process can be the parent):
 npm run start:node-parent -w @napi-oop/example-add-numbers  # Node spawns Rust
 npm run start:rust-parent -w @napi-oop/example-add-numbers  # Rust spawns Node
+npm run start:sync        -w @napi-oop/example-add-numbers  # blocking/sync call
 ```
 
 Both print `addNumbers(2, 3) = 5`. The parent generates a named-socket path and
