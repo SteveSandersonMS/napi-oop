@@ -4,6 +4,7 @@ members = [
     "crates/napi-oop",
     "crates/napi-oop-macro",
     "examples/add-numbers",
+    "examples/tokio-fetch",
 ]
 
 [workspace.package]

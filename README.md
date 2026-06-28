@@ -76,4 +76,10 @@ their latency. The manifest marks them async, so they surface as `Promise<T>` in
 **both** the async and sync bindings: a sync binding never hides asynchrony.
 `multiplySlow` in the example proves two 200ms calls finish in ~200ms.
 
+There's also a **tokio** example: enable napi-oop's `tokio` feature so `block_on`
+runs on a shared multi-thread tokio runtime, and real tokio futures (timers, IO)
+work. `examples/tokio-fetch` runs three `tokio::time::sleep(200ms)` calls in
+~200ms total.
+
+
 

@@ -15,6 +15,12 @@ rmp-serde = "1"
 rmpv = { version = "1", features = ["with-serde"] }
 inventory = "0.3"
 pollster = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
+
+[features]
+# Drive provider `async fn`s on a shared multi-thread tokio runtime, so tokio
+# timers/IO work. Without it, `block_on` uses pollster (no reactor).
+tokio = ["dep:tokio"]
 
 [dev-dependencies]
 napi-oop-macro = { path = "../napi-oop-macro", features = ["out-of-proc"] }

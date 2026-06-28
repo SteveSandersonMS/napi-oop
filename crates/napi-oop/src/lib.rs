@@ -29,7 +29,23 @@ pub use rmpv;
 
 // Drives `async fn` providers to completion inside the sync dispatch thunk. Each
 // request runs on its own thread, so blocking here still allows concurrent calls.
+//
+// Default: pollster (no reactor — fine for `.await`s that don't need one). With
+// the `tokio` feature: a shared multi-thread tokio runtime, so tokio timers/IO
+// work. The macro always calls `napi_oop::block_on`, so providers pick the
+// behavior purely via the crate feature.
+#[cfg(not(feature = "tokio"))]
 pub use pollster::block_on;
+
+#[cfg(feature = "tokio")]
+pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    use std::sync::OnceLock;
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    let rt = RT.get_or_init(|| {
+        tokio::runtime::Runtime::new().expect("build tokio runtime for napi-oop block_on")
+    });
+    rt.block_on(fut)
+}
 
 /// Convenience re-exports for the common surface.
 pub mod prelude {

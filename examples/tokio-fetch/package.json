@@ -1,0 +1,22 @@
+{
+  "name": "@napi-oop/example-tokio-fetch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Example: a TypeScript entrypoint calling an out-of-process tokio-based async Rust function",
+  "main": "dist/main.js",
+  "scripts": {
+    "build:native": "cargo build --release -p tokio-fetch-example",
+    "build:types": "node ../../packages/runtime/dist/codegen-cli.js ../../target/release/tokio-fetch-provider ts/generated TokioFetch",
+    "build:ts": "tsc",
+    "build": "npm run build:native && npm run build:types && npm run build:ts",
+    "start": "node dist/main.js",
+    "start:rust-parent": "../../target/release/tokio-fetch-provider node dist/main.js"
+  },
+  "dependencies": {
+    "@napi-oop/runtime": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

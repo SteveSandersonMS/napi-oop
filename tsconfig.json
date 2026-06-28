@@ -5,6 +5,7 @@
   "files": [],
   "references": [
     { "path": "packages/runtime" },
-    { "path": "examples/add-numbers" }
+    { "path": "examples/add-numbers" },
+    { "path": "examples/tokio-fetch" }
   ]
 }
