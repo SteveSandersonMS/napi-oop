@@ -7,6 +7,9 @@ members = [
     "examples/add-numbers",
     "examples/tokio-fetch",
 ]
+exclude = [
+    "examples/native-add",
+]
 
 [workspace.package]
 version = "0.1.0"

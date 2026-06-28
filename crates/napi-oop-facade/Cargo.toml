@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["in-proc"]
-in-proc = ["napi-oop-macro/in-proc", "dep:napi", "dep:napi-derive"]
+in-proc = ["napi-oop-macro/in-proc", "dep:napi", "dep:napi-derive", "napi-derive/type-def"]
 out-of-proc = ["napi-oop-macro/out-of-proc"]
 
 [dependencies]

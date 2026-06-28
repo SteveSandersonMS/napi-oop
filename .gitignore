@@ -12,3 +12,4 @@ dist/
 # Generated bindings (regenerated from the Rust manifest at build time)
 examples/add-numbers/ts/generated/
 examples/tokio-fetch/ts/generated/
+examples/native-add/target/

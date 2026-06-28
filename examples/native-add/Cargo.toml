@@ -1,0 +1,20 @@
+[package]
+name = "native-add-example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+# In-proc build: produces a real native `.node` addon via napi-rs, from the same
+# `#[napi]` source the out-of-proc example uses. Demonstrates the facade's
+# in-proc path end to end.
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { package = "napi-oop-facade", path = "../../crates/napi-oop-facade", default-features = false, features = ["in-proc"] }
+napi-derive = { version = "2", features = ["type-def"] }
+
+[build-dependencies]
+napi-build = "2"
