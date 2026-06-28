@@ -83,6 +83,11 @@ impl crate::registry::Callbacks for ProviderCallbacks {
         let msg = Message::CallbackInvoke(crate::codec::CallbackInvoke { handle, args });
         let _ = write_message(&mut *self.writer.lock().unwrap(), &msg);
     }
+
+    fn release(&self, handle: u64) {
+        let msg = Message::Release(crate::codec::Release { handle });
+        let _ = write_message(&mut *self.writer.lock().unwrap(), &msg);
+    }
 }
 
 /// Connect to a peer listening at `path` and serve it.

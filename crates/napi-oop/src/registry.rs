@@ -25,6 +25,10 @@ pub trait Callbacks: Send + Sync {
     /// Queue an invocation of the peer-held callback `handle` with `args`.
     /// Returns once enqueued; runs asynchronously on the peer.
     fn invoke(&self, handle: HandleId, args: Vec<Value>);
+
+    /// Tell the peer it may drop `handle` — sent when the Rust side stops
+    /// holding the callback (closure dropped, or last `ThreadsafeFunction` gone).
+    fn release(&self, handle: HandleId);
 }
 
 /// A type-erased dispatch thunk: decodes args, calls the function, encodes the
@@ -60,6 +64,7 @@ pub struct NoCallbacks;
 
 impl Callbacks for NoCallbacks {
     fn invoke(&self, _handle: HandleId, _args: Vec<Value>) {}
+    fn release(&self, _handle: HandleId) {}
 }
 
 /// Look up a registered function by exported name.

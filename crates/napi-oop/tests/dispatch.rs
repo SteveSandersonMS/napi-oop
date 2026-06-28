@@ -152,19 +152,26 @@ fn manifest_flags_async_from_keyword_not_return_type() {
     assert!(!sync.is_async);
 }
 
-/// Records every callback invocation (fire-and-forget, so nothing is returned).
+/// Records every callback invocation, plus any released handles.
 struct RecordingCallbacks {
     steps: std::sync::Mutex<Vec<i64>>,
+    released: std::sync::Mutex<Vec<u64>>,
 }
 
 impl registry::Callbacks for RecordingCallbacks {
     fn invoke(&self, _handle: u64, args: Vec<Value>) {
         self.steps.lock().unwrap().push(args[0].as_i64().unwrap());
     }
+    fn release(&self, handle: u64) {
+        self.released.lock().unwrap().push(handle);
+    }
 }
 
 fn record(function: &str) -> (Message, std::sync::Arc<RecordingCallbacks>) {
-    let cb = std::sync::Arc::new(RecordingCallbacks { steps: std::sync::Mutex::new(Vec::new()) });
+    let cb = std::sync::Arc::new(RecordingCallbacks {
+        steps: std::sync::Mutex::new(Vec::new()),
+        released: std::sync::Mutex::new(Vec::new()),
+    });
     let dyn_cb: std::sync::Arc<dyn registry::Callbacks> = cb.clone();
     let values = Value::Array(vec![Value::from(10i64), Value::from(20i64), Value::from(30i64)]);
     let handle = Value::Map(vec![(Value::from("__napi_cb"), Value::from(7u64))]);
@@ -193,6 +200,15 @@ fn threadsafe_function_invokes_through_callbacks_table() {
         other => panic!("expected response, got {other:?}"),
     }
     assert_eq!(*cb.steps.lock().unwrap(), vec![10, 30, 60]);
+}
+
+#[test]
+fn callback_handle_is_released_when_closure_drops() {
+    // Both forms must release handle 7 once the Rust callback drops at call end.
+    for name in ["sum_each", "sum_each_tsfn"] {
+        let (_reply, cb) = record(name);
+        assert_eq!(*cb.released.lock().unwrap(), vec![7], "{name} should release");
+    }
 }
 
 #[test]

@@ -85,9 +85,9 @@ mod out_of_proc {
                     let #ident = {
                         let __h = ::napi_oop::wire::callback_handle(&__iter.next().unwrap())
                             .map_err(|e| ::std::string::ToString::to_string(&e))?;
-                        let __sink = ::std::sync::Arc::clone(__cb);
+                        let __cbh = ::napi_oop::tsfn::CallbackHandle::new(__h, ::std::sync::Arc::clone(__cb));
                         move |#(#cb_args: #inputs),*| {
-                            __sink.invoke(__h, ::std::vec![
+                            __cbh.invoke(::std::vec![
                                 #(::napi_oop::wire::to_wire(&#cb_args).unwrap()),*
                             ]);
                         }

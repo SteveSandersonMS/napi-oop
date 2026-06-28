@@ -104,6 +104,7 @@ export class Peer {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.callbacks.clear();
     this.socket.end();
     this.failAll(new Error('peer closed'));
   }
@@ -111,6 +112,10 @@ export class Peer {
   private onMessage(msg: Message): void {
     if (msg.type === 'callbackInvoke') {
       this.handleCallback(msg.handle, msg.args);
+      return;
+    }
+    if (msg.type === 'release') {
+      this.callbacks.delete(msg.handle);
       return;
     }
     if (msg.type !== 'response' && msg.type !== 'error') return;
