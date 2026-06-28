@@ -30,8 +30,8 @@ pub fn napi(_attr: TokenStream, item: TokenStream) -> TokenStream {
 mod in_proc {
     use proc_macro::TokenStream;
 
-    /// In-process mode. Pass the annotated item through unchanged; a real build
-    /// layers napi-rs's `#[napi]` for the in-process binding.
+    /// In-process mode. Pass through; the facade re-exports napi-rs's real
+    /// `#[napi]` so source produces a native `.node`.
     pub(super) fn expand(_attr: TokenStream, item: TokenStream) -> TokenStream {
         item
     }
