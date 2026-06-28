@@ -8,3 +8,6 @@ node_modules/
 # Build output (TypeScript)
 dist/
 *.tsbuildinfo
+
+# Generated bindings (regenerated from the Rust manifest at build time)
+examples/add-numbers/ts/generated/

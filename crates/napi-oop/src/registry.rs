@@ -22,6 +22,13 @@ pub struct RegisteredFn {
     pub name: &'static str,
     /// The thunk that services a call to this function.
     pub dispatch: DispatchFn,
+    /// The Rust type of each parameter, in declaration order (e.g. `["i64","i64"]`).
+    /// The IDL the TS generator maps to TS types.
+    pub params: &'static [&'static str],
+    /// The declared name of each parameter, in order (e.g. `["a","b"]`).
+    pub param_names: &'static [&'static str],
+    /// The Rust return type (e.g. `"i64"`).
+    pub ret: &'static str,
 }
 
 inventory::collect!(RegisteredFn);

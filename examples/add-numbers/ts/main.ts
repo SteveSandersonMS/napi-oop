@@ -12,14 +12,10 @@ import {
   Peer,
   SOCKET_ENV,
   connectFromEnv,
-  createBinding,
   launchProvider,
 } from '@napi-oop/runtime';
 
-/** The functions the Rust provider exposes (Rust `add_numbers` -> `addNumbers`). */
-interface AddNumbers {
-  addNumbers(a: number, b: number): Promise<number>;
-}
+import { bind } from './generated/bindings';
 
 /** The provider binary built by `cargo build --release -p add-numbers-example`. */
 function providerCommand(): string {
@@ -27,7 +23,7 @@ function providerCommand(): string {
 }
 
 async function callAddNumbers(peer: Peer): Promise<void> {
-  const native = createBinding<AddNumbers>(peer);
+  const native = bind(peer);
   const a = 2;
   const b = 3;
   const result = await native.addNumbers(a, b);

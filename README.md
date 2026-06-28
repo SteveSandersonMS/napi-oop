@@ -59,3 +59,12 @@ npm run start:sync        -w @napi-oop/example-add-numbers  # blocking/sync call
 Both print `addNumbers(2, 3) = 5`. The parent generates a named-socket path and
 passes it to the child via the `NAPI_OOP_SOCKET` env var; the child connects
 back. Rust stays the provider and Node the caller regardless of who is parent.
+
+### Generated TypeScript bindings
+
+The Rust `#[napi]` signatures are the IDL. The provider prints a type manifest
+(`<provider> --emit-manifest`); the `napi-oop-codegen` CLI turns it into a typed
+`bindings.ts` (both an async `Promise<T>` interface and a sync one), so the
+caller never hand-writes interfaces. The example regenerates them in its
+`build:types` step, then imports `bind(peer)` / `bindSync(provider)`.
+

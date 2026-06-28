@@ -20,6 +20,14 @@ export { encodeFrame, createFrameDecoder } from './framing';
 export { Peer } from './peer';
 export { createBinding, camelToSnake } from './binding';
 export {
+  generateDts,
+  generateJs,
+  generateTs,
+  parseManifest,
+  type Manifest,
+  type FnSignature,
+} from './codegen';
+export {
   launchProviderSync,
   connectFromEnvSync,
   createSyncBinding,

@@ -16,6 +16,7 @@ pub mod transport;
 pub mod codec;
 pub mod wire;
 pub mod registry;
+pub mod manifest;
 pub mod peer;
 pub mod provider;
 pub mod bootstrap;
@@ -28,6 +29,7 @@ pub use rmpv;
 
 /// Convenience re-exports for the common surface.
 pub mod prelude {
+    pub use crate::manifest::{manifest, manifest_json};
     pub use crate::registry::{dispatch, registered_names};
     pub use crate::transport::Transport;
     pub use crate::wire::{FromWire, ToWire};

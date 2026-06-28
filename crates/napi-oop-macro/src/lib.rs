@@ -53,9 +53,17 @@ mod out_of_proc {
 
         // Collect the (typed) argument types; methods aren't supported yet.
         let mut arg_types = Vec::new();
+        let mut arg_names = Vec::new();
         for input in &func.sig.inputs {
             match input {
-                FnArg::Typed(PatType { ty, .. }) => arg_types.push((**ty).clone()),
+                FnArg::Typed(PatType { ty, pat, .. }) => {
+                    arg_types.push((**ty).clone());
+                    let name = match &**pat {
+                        syn::Pat::Ident(p) => p.ident.to_string(),
+                        _ => format!("arg{}", arg_types.len() - 1),
+                    };
+                    arg_names.push(name);
+                }
                 FnArg::Receiver(receiver) => {
                     return syn::Error::new_spanned(
                         receiver,
@@ -75,6 +83,16 @@ mod out_of_proc {
                     .map_err(|e| ::std::string::ToString::to_string(&e))?;
             }
         });
+
+        // Stringify each Rust type for the manifest the TS generator consumes.
+        let param_type_strs: Vec<String> = arg_types
+            .iter()
+            .map(|ty| quote!(#ty).to_string().split_whitespace().collect())
+            .collect();
+        let ret_type_str: String = match &func.sig.output {
+            syn::ReturnType::Default => "()".to_string(),
+            syn::ReturnType::Type(_, ty) => quote!(#ty).to_string().split_whitespace().collect(),
+        };
 
         let expanded = quote! {
             #func
@@ -102,6 +120,9 @@ mod out_of_proc {
                     ::napi_oop::registry::RegisteredFn {
                         name: #fn_name_str,
                         dispatch: __napi_oop_dispatch,
+                        params: &[#(#param_type_strs),*],
+                        param_names: &[#(#arg_names),*],
+                        ret: #ret_type_str,
                     }
                 }
             };

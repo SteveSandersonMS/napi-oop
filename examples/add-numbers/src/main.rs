@@ -21,15 +21,26 @@ pub fn add_numbers(a: i32, b: i32) -> i32 {
 }
 
 fn main() {
+    let mut argv = std::env::args().skip(1);
+    let first = argv.next();
+
+    if first.as_deref() == Some("--emit-manifest") {
+        // Codegen mode: print the type manifest the TS generator consumes.
+        println!("{}", napi_oop::manifest::manifest_json());
+        return;
+    }
+
     let result = if std::env::var_os(SOCKET_ENV).is_some() {
         // Spawned as a child: connect back to the parent and serve.
         serve_from_env()
     } else {
         // Parent: the child command to spawn is the rest of the argv.
-        let child: Vec<String> = std::env::args().skip(1).collect();
+        let mut child: Vec<String> = first.into_iter().collect();
+        child.extend(argv);
         if child.is_empty() {
             eprintln!(
-                "usage: {} <child-command...>   (or set {SOCKET_ENV} to run as a child)",
+                "usage: {} <child-command...>   (or set {SOCKET_ENV} to run as a child, \
+                 or --emit-manifest to print types)",
                 prog()
             );
             std::process::exit(2);

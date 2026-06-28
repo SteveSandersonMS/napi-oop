@@ -5,12 +5,9 @@
 
 import { join } from 'path';
 
-import { createSyncBinding, launchProviderSync } from '@napi-oop/runtime';
+import { launchProviderSync } from '@napi-oop/runtime';
 
-/** The provider functions, synchronous form. */
-interface AddNumbers {
-  addNumbers(a: number, b: number): number;
-}
+import { bindSync } from './generated/bindings';
 
 function providerCommand(): string {
   return join(__dirname, '..', '..', '..', 'target', 'release', 'add-numbers-provider');
@@ -18,7 +15,7 @@ function providerCommand(): string {
 
 const provider = launchProviderSync({ command: providerCommand() });
 try {
-  const native = createSyncBinding<AddNumbers>(provider);
+  const native = bindSync(provider);
   const result = native.addNumbers(2, 3);
   console.log(`[node-parent:sync] addNumbers(2, 3) = ${result}`);
 } finally {
