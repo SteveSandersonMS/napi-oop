@@ -1,27 +1,33 @@
 # napi-oop
 
-Run `#[napi]`-annotated Rust **out of process** from Node, communicating over a
-path-based named socket (never stdio). Either process may be the parent. See the
-implementation plan for the architecture and roadmap.
+Compile the **same** `#[napi]`-annotated Rust source two ways: a native in-process
+`.node` addon (real napi-rs) or an **out-of-process** provider that talks to Node
+over a path-based named socket (never stdio). The source never changes — it keeps
+using the `napi::…` path — only a cargo feature picks the mode.
 
-> Status: the out-of-process path works end to end, with a **symmetric
+> Status: both modes work end to end. **Out-of-process** has a **symmetric
 > bootstrap** — either Node or Rust may be the parent that spawns the other.
-> Node `await`s calls to `#[napi]` functions over a named socket
-> (`await addNumbers(2, 3) === 5`), or calls them **synchronously** via a
-> worker-backed blocking variant. See the example.
+> Node `await`s calls to `#[napi]` functions (`await addNumbers(2, 3) === 5`) or
+> calls them **synchronously** via a worker-backed blocking variant, and Rust can
+> invoke JS callbacks (`ThreadsafeFunction`). **In-process** builds an ordinary
+> native addon via `@napi-rs/cli`. See the examples.
 
 ## Repository layout
 
 ```
-Cargo.toml                  # Cargo workspace
+Cargo.toml                  # Cargo workspace (excludes examples/native-add)
 tsconfig.json               # TypeScript project references (monorepo root)
 crates/
   napi-oop/                 # Rust runtime (transport, codec, wire, registry, peer, provider)
   napi-oop-macro/           # the #[napi] attribute macro (in-proc / out-of-proc modes)
+  napi-oop-facade/          # crate published as `napi`: keeps source on the napi:: path,
+                            #   re-exporting napi-rs (in-proc) or napi-oop shims (out-of-proc)
 packages/
   runtime/                  # @napi-oop/runtime — Node-side runtime (TypeScript)
 examples/
-  add-numbers/              # example: TS entrypoint calling out-of-process Rust add_numbers
+  add-numbers/              # out-of-process: TS entrypoint calling Rust add_numbers
+  tokio-fetch/              # out-of-process: concurrent tokio-backed async calls
+  native-add/               # in-process: same source built as a native .node via napi-rs
 ```
 
 This is both a Cargo workspace (`crates/*`, `examples/*`) and an npm workspace
@@ -29,10 +35,10 @@ This is both a Cargo workspace (`crates/*`, `examples/*`) and an npm workspace
 
 ## Build modes
 
-`napi-oop-macro` exposes `#[napi]` with two cargo-feature build modes:
+`#[napi]` works in two cargo-feature build modes, both from unchanged source:
 
-- `in-proc` (default) — behaves like a normal in-process napi-rs build
-  (pass-through today).
+- `in-proc` (default) — a normal in-process napi-rs build. The facade re-exports
+  real napi-rs, so `@napi-rs/cli` emits a native `.node` plus a typed loader.
 - `out-of-proc` — emits the out-of-process remoting glue: a serde/MessagePack
   dispatch thunk registered with the runtime, served to Node over the socket.
 
@@ -60,6 +66,19 @@ Both print `addNumbers(2, 3) = 5`. The parent generates a named-socket path and
 passes it to the child via the `NAPI_OOP_SOCKET` env var; the child connects
 back. Rust stays the provider and Node the caller regardless of who is parent.
 
+### In-process native addon
+
+`examples/native-add` builds the **same** `#[napi]` source as a native `.node`:
+
+```bash
+npm run build -w @napi-oop/example-native-add  # napi build (.node + .d.ts) then tsc
+npm start     -w @napi-oop/example-native-add  # prints addNumbers(2, 3) = 5
+```
+
+`@napi-rs/cli` generates the loader and `.d.ts` from the type-def metadata; the TS
+entrypoint imports the typed binding. It lives outside the Cargo workspace because
+its in-proc facade features are mutually exclusive with the out-of-proc examples.
+
 ### Generated TypeScript bindings
 
 The Rust `#[napi]` signatures are the IDL. The provider prints a type manifest
@@ -71,15 +90,23 @@ caller never hand-writes interfaces. The example regenerates them in its
 ### Async Rust + concurrency
 
 `async fn` providers are detected from the `async` keyword and dispatched
-concurrently — each call runs on its own thread, so overlapping calls overlap
-their latency. The manifest marks them async, so they surface as `Promise<T>` in
-**both** the async and sync bindings: a sync binding never hides asynchrony.
-`multiplySlow` in the example proves two 200ms calls finish in ~200ms.
+concurrently across a fixed worker pool (sized to `available_parallelism`), so
+overlapping calls overlap their latency without spawning a thread per request.
+The manifest marks them async, so they surface as `Promise<T>` in **both** the
+async and sync bindings: a sync binding never hides asynchrony. `multiplySlow` in
+the example proves two 200ms calls finish in ~200ms.
 
 There's also a **tokio** example: enable napi-oop's `tokio` feature so `block_on`
 runs on a shared multi-thread tokio runtime, and real tokio futures (timers, IO)
 work. `examples/tokio-fetch` runs three `tokio::time::sleep(200ms)` calls in
 ~200ms total.
+
+### Callbacks (ThreadsafeFunction)
+
+Providers can invoke JS callbacks fire-and-forget, matching napi-rs semantics:
+accept either an `impl Fn(..)` parameter or an explicit `ThreadsafeFunction<T>`,
+and the runtime routes invocations back over the socket. Sync calls reject
+callback arguments (they throw) since there is no event loop to drain them.
 
 
 
