@@ -5,11 +5,14 @@
     "moduleResolution": "node16",
     "rootDir": "ts",
     "outDir": "dist",
+    "composite": true,
     "allowJs": true,
     "strict": true,
     "esModuleInterop": true,
+    "types": ["node"],
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["ts/**/*.ts", "ts/**/*.js"]
+  "include": ["ts/**/*.ts", "ts/**/*.js"],
+  "references": [{ "path": "../../packages/runtime" }]
 }

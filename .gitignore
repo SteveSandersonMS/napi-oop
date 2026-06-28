@@ -5,8 +5,6 @@ spike/rust/target/
 # Node
 node_modules/
 
-# Build output (TypeScript + generated napi binding)
+# Build output (TypeScript)
 dist/
-**/ts/generated/*.node
-**/ts/generated/index.js
-**/ts/generated/index.d.ts
+*.tsbuildinfo

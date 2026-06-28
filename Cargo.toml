@@ -5,8 +5,6 @@ members = [
     "crates/napi-oop-macro",
     "examples/add-numbers",
 ]
-# The Phase 0 spike is a self-contained throwaway with its own lockfile.
-exclude = ["spike/rust"]
 
 [workspace.package]
 version = "0.1.0"

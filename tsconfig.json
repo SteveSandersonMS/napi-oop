@@ -1,0 +1,10 @@
+{
+  // Root of the TypeScript monorepo. It builds nothing itself; it references the
+  // real projects so editors and `tsc --build` resolve the whole workspace and
+  // don't fall back to inferred projects (which lack our node-types config).
+  "files": [],
+  "references": [
+    { "path": "packages/runtime" },
+    { "path": "examples/add-numbers" }
+  ]
+}

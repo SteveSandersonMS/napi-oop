@@ -1,10 +1,17 @@
 // Length-prefixed (u32 big-endian) framing — the Node counterpart to the Rust
-// `codec` module. Phase 2 swaps the JSON payloads for a compact binary
-// encoding; the framing (length prefix) stays the same.
+// `codec` module. Each frame's payload is a MessagePack-encoded message, matching
+// the Rust side's `rmp-serde` `to_vec_named` output (maps with string keys), so
+// the two languages interoperate.
 
-/** Encode a JSON-serializable message as a length-prefixed frame. */
+import { Packr } from 'msgpackr';
+
+// `useRecords: false` keeps payloads as plain MessagePack maps (no msgpackr's
+// record-extension shorthand), which is what `rmp-serde` produces and expects.
+const packr = new Packr({ useRecords: false });
+
+/** Encode a message as a length-prefixed MessagePack frame. */
 export function encodeFrame(message: unknown): Buffer {
-  const payload = Buffer.from(JSON.stringify(message), 'utf8');
+  const payload = packr.pack(message);
   const header = Buffer.allocUnsafe(4);
   header.writeUInt32BE(payload.length, 0);
   return Buffer.concat([header, payload]);
@@ -25,7 +32,7 @@ export function createFrameDecoder(
       if (buffer.length < 4 + len) break;
       const payload = buffer.subarray(4, 4 + len);
       buffer = buffer.subarray(4 + len);
-      onMessage(JSON.parse(payload.toString('utf8')));
+      onMessage(packr.unpack(payload));
     }
   };
 }

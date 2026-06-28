@@ -4,12 +4,10 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
-[lib]
-crate-type = ["cdylib"]
+[[bin]]
+name = "add-numbers-provider"
+path = "src/main.rs"
 
 [dependencies]
-napi = { version = "2", default-features = false, features = ["napi4"] }
-napi-derive = "2"
-
-[build-dependencies]
-napi-build = "2"
+napi-oop = { path = "../../crates/napi-oop" }
+napi-oop-macro = { path = "../../crates/napi-oop-macro", features = ["out-of-proc"] }
