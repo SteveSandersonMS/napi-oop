@@ -1,11 +1,17 @@
-//! The `add-numbers` example application.
+//! The `add-numbers` example provider application.
 //!
-//! This is an *application* using the `napi-oop` library out-of-process. It
-//! declares its `#[napi]` functions (identical to an in-process napi build) and
-//! provides its own entrypoint: parse `<connect|listen> <socket-path>` and hand
-//! the connection to the library's provider runtime, which handshakes and serves
-//! calls routed to the registered functions.
+//! Declares the `#[napi]` functions and owns its entrypoint. The provider role
+//! (hosting the functions) is independent of which process is the parent:
+//!
+//! - **Child** (another process spawned us): `NAPI_OOP_SOCKET` is set in the
+//!   environment, so connect to it and serve.
+//! - **Parent**: spawn the command given on the argv (e.g. `node dist/main.js`)
+//!   as the child, passing it a freshly generated socket path, then serve.
 
+use std::process::Command;
+
+use napi_oop::bootstrap::SOCKET_ENV;
+use napi_oop::provider::{serve_from_env, spawn_and_serve};
 use napi_oop_macro::napi;
 
 /// Adds two numbers and returns the result.
@@ -15,20 +21,22 @@ pub fn add_numbers(a: i32, b: i32) -> i32 {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 3 {
-        eprintln!("usage: {} <connect|listen> <socket-path>", prog(&args));
-        std::process::exit(2);
-    }
-
-    let path = &args[2];
-    let result = match args[1].as_str() {
-        "connect" => napi_oop::provider::connect_and_serve(path),
-        "listen" => napi_oop::provider::listen_and_serve(path),
-        other => {
-            eprintln!("unknown mode: {other} (expected `connect` or `listen`)");
+    let result = if std::env::var_os(SOCKET_ENV).is_some() {
+        // Spawned as a child: connect back to the parent and serve.
+        serve_from_env()
+    } else {
+        // Parent: the child command to spawn is the rest of the argv.
+        let child: Vec<String> = std::env::args().skip(1).collect();
+        if child.is_empty() {
+            eprintln!(
+                "usage: {} <child-command...>   (or set {SOCKET_ENV} to run as a child)",
+                prog()
+            );
             std::process::exit(2);
         }
+        let mut command = Command::new(&child[0]);
+        command.args(&child[1..]);
+        spawn_and_serve(command)
     };
 
     if let Err(e) = result {
@@ -37,6 +45,6 @@ fn main() {
     }
 }
 
-fn prog(args: &[String]) -> &str {
-    args.first().map(String::as_str).unwrap_or("add-numbers")
+fn prog() -> String {
+    std::env::args().next().unwrap_or_else(|| "add-numbers-provider".into())
 }

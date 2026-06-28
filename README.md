@@ -4,9 +4,10 @@ Run `#[napi]`-annotated Rust **out of process** from Node, communicating over a
 path-based named socket (never stdio). Either process may be the parent. See the
 implementation plan for the architecture and roadmap.
 
-> Status: the out-of-process path works end to end — Node launches a Rust
-> provider as a child process, connects over a named socket, and `await`s calls
-> to `#[napi]` functions (`await addNumbers(2, 3) === 5`). See the example.
+> Status: the out-of-process path works end to end, with a **symmetric
+> bootstrap** — either Node or Rust may be the parent that spawns the other.
+> Node `await`s calls to `#[napi]` functions over a named socket
+> (`await addNumbers(2, 3) === 5`). See the example.
 
 ## Repository layout
 
@@ -47,5 +48,12 @@ cargo test --workspace                        # run the Rust tests
 npm install                                   # install npm workspaces
 npm run build -w @napi-oop/runtime            # build the Node runtime package
 npm run build -w @napi-oop/example-add-numbers  # build the example (cargo + tsc)
-npm start  -w @napi-oop/example-add-numbers   # run it -> addNumbers(2, 3) = 5
+
+# Run it (symmetric bootstrap — either process can be the parent):
+npm run start:node-parent -w @napi-oop/example-add-numbers  # Node spawns Rust
+npm run start:rust-parent -w @napi-oop/example-add-numbers  # Rust spawns Node
 ```
+
+Both print `addNumbers(2, 3) = 5`. The parent generates a named-socket path and
+passes it to the child via the `NAPI_OOP_SOCKET` env var; the child connects
+back. Rust stays the provider and Node the caller regardless of who is parent.

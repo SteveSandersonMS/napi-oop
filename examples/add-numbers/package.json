@@ -8,7 +8,9 @@
     "build:native": "cargo build --release -p add-numbers-example",
     "build:ts": "tsc",
     "build": "npm run build:native && npm run build:ts",
-    "start": "node dist/main.js"
+    "start": "npm run start:node-parent",
+    "start:node-parent": "node dist/main.js",
+    "start:rust-parent": "../../target/release/add-numbers-provider node dist/main.js"
   },
   "dependencies": {
     "@napi-oop/runtime": "^0.1.0"
