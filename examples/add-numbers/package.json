@@ -1,0 +1,23 @@
+{
+  "name": "@napi-oop/example-add-numbers",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Example: a TypeScript entrypoint calling a Rust add_numbers function",
+  "main": "dist/main.js",
+  "napi": {
+    "name": "add-numbers"
+  },
+  "scripts": {
+    "build:native": "napi build --platform --release --cargo-cwd . --dts index.d.ts ts/generated",
+    "build:native:debug": "napi build --platform --cargo-cwd . --dts index.d.ts ts/generated",
+    "build:ts": "tsc",
+    "build:copy": "cp ts/generated/*.node dist/generated/",
+    "build": "npm run build:native && npm run build:ts && npm run build:copy",
+    "start": "node dist/main.js"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

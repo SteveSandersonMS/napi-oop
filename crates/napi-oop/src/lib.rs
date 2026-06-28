@@ -1,0 +1,26 @@
+//! # napi-oop — out-of-process napi runtime
+//!
+//! Runs `#[napi]`-annotated Rust in a **separate process** from Node and lets
+//! the two communicate over a duplex byte channel (a path-based named socket —
+//! never stdio). Either process may be the parent.
+//!
+//! This crate is the Rust-side runtime that the generated glue (from
+//! `napi-oop-macro`) calls into. The module layout below mirrors the
+//! implementation plan; most modules are skeletons filled in by later phases.
+
+/// Wire protocol version exchanged in the `Hello` handshake. Bumped on any
+/// breaking change to the framing or message set.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+pub mod transport;
+pub mod codec;
+pub mod wire;
+pub mod registry;
+pub mod peer;
+
+/// Convenience re-exports for the common surface.
+pub mod prelude {
+    pub use crate::transport::Transport;
+    pub use crate::wire::{FromWire, ToWire};
+    pub use crate::PROTOCOL_VERSION;
+}

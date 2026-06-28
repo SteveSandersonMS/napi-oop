@@ -1,6 +1,12 @@
+# Rust
+/target/
+spike/rust/target/
+
+# Node
 node_modules/
-src/rust/target/
+
+# Build output (TypeScript + generated napi binding)
 dist/
-src/ts/generated/*.node
-src/ts/generated/index.js
-src/ts/generated/index.d.ts
+**/ts/generated/*.node
+**/ts/generated/index.js
+**/ts/generated/index.d.ts

@@ -1,7 +1,8 @@
 [package]
-name = "napi-pipe"
-version = "0.1.0"
-edition = "2021"
+name = "add-numbers-example"
+version.workspace = true
+edition.workspace = true
+publish = false
 
 [lib]
 crate-type = ["cdylib"]
@@ -12,7 +13,3 @@ napi-derive = "2"
 
 [build-dependencies]
 napi-build = "2"
-
-[profile.release]
-lto = true
-strip = "symbols"

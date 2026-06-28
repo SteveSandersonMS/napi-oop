@@ -1,33 +1,59 @@
-# napi-pipe
+# napi-oop
 
-A minimal [napi-rs](https://napi.rs/) example: a TypeScript entrypoint that calls
-into a simple Rust function, `add_numbers`.
+Run `#[napi]`-annotated Rust **out of process** from Node, communicating over a
+path-based named socket (never stdio). Either process may be the parent. See the
+implementation plan for the architecture and roadmap.
 
-## Layout
+> Status: early scaffolding. A working Phase 0 transport spike lives in `spike/`;
+> the real runtime/macro crates are skeletons being filled in phase by phase.
 
-- `src/rust/` — the Rust crate.
-  - `src/rust/src/lib.rs` — the `add_numbers` function, exported to Node via `#[napi]`.
-  - `src/rust/Cargo.toml` / `src/rust/build.rs` — crate config (builds a `cdylib`).
-- `src/ts/` — the TypeScript source.
-  - `src/ts/main.ts` — the entrypoint that calls `addNumbers`.
-  - `src/ts/generated/` — generated native binding (`index.js`, `index.d.ts`, `*.node`).
-- `dist/` — compiled JavaScript output (`tsc`, plus the copied `*.node`).
-- `package.json` / `tsconfig.json` — build config.
+## Repository layout
 
-The `src/ts/generated/` files and `dist/` are generated and git-ignored.
+```
+Cargo.toml                  # Cargo workspace
+crates/
+  napi-oop/                 # Rust runtime (transport, codec, wire, registry, peer)
+  napi-oop-macro/           # the #[napi] attribute macro (in-proc / out-of-proc modes)
+packages/
+  runtime/                  # @napi-oop/runtime — Node-side runtime (TypeScript)
+examples/
+  add-numbers/              # example: TS entrypoint calling Rust add_numbers
+spike/                      # Phase 0 throwaway transport spike (self-contained)
+```
+
+This is both a Cargo workspace (`crates/*`, `examples/*`) and an npm workspace
+(`packages/*`, `examples/*`). The `spike/` is excluded from both.
+
+## Build modes
+
+`napi-oop-macro` exposes `#[napi]` with two cargo-feature build modes:
+
+- `in-proc` (default) — behaves like a normal in-process napi-rs build.
+- `out-of-proc` — emits out-of-process remoting glue.
+
+(Both are pass-throughs today; codegen lands in a later phase.)
 
 ## Prerequisites
 
 - Node.js
 - Rust toolchain (`rustc` / `cargo`)
 
-## Usage
+## Common tasks
 
 ```bash
-npm install      # install @napi-rs/cli + TypeScript
-npm run build    # Rust addon -> src/ts/generated/, tsc -> dist/, copy *.node -> dist/generated/
-npm start        # node dist/main.js -> addNumbers(2, 3) = 5
+cargo build                                   # build all Rust crates
+npm install                                   # install npm workspaces
+npm run build -w @napi-oop/runtime            # build the Node runtime package
+npm run build -w @napi-oop/example-add-numbers  # build the example (napi + tsc)
+npm start  -w @napi-oop/example-add-numbers   # run it -> addNumbers(2, 3) = 5
 ```
 
-Useful sub-scripts: `npm run build:native` (Rust only), `npm run build:ts`
-(TypeScript only), and `npm run build:copy` (copy the native binary).
+## Phase 0 spike
+
+```bash
+spike/run-node-parent.sh   # Node parent  -> Rust child
+spike/run-rust-parent.sh   # Rust parent  -> Node child
+```
+
+Proves the named-socket transport with either side as the parent. See
+`spike/README.md`.
