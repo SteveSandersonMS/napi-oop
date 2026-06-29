@@ -96,6 +96,18 @@ impl<'de> Deserialize<'de> for BigInt {
 static EXTERNAL_SLAB: Mutex<Option<HashMap<u64, Box<dyn std::any::Any + Send>>>> = Mutex::new(None);
 static EXTERNAL_NEXT: AtomicU64 = AtomicU64::new(1);
 
+thread_local! {
+    /// Per-thread count of tokens minted, sampled by the dispatcher around a call
+    /// (each call runs on one worker thread) so concurrent calls don't interfere.
+    static MINTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Tokens minted on this thread so far. The dispatcher diffs this before/after a
+/// call to enforce that minted `External`s surface top-level, never nested.
+pub fn external_mint_count() -> u64 {
+    MINTED.with(|c| c.get())
+}
+
 /// JS-held opaque handle to a Rust value mirroring napi-rs's `External<T>`. The
 /// value stays provider-side in a slab; only a u64 token crosses the boundary.
 pub struct External<T: Send + 'static> {
@@ -106,6 +118,7 @@ pub struct External<T: Send + 'static> {
 impl<T: Send + 'static> External<T> {
     pub fn new(value: T) -> Self {
         let token = EXTERNAL_NEXT.fetch_add(1, Ordering::Relaxed);
+        MINTED.with(|c| c.set(c.get() + 1));
         let mut guard = EXTERNAL_SLAB.lock().unwrap();
         guard.get_or_insert_with(HashMap::new).insert(token, Box::new(value));
         External { token, _marker: std::marker::PhantomData }
@@ -136,6 +149,14 @@ impl<T: Clone + Send + 'static> External<T> {
 
 /// Key marking a value as an external handle on the wire: `{ "__napi_ext": <id> }`.
 pub const EXTERNAL_KEY: &str = "__napi_ext";
+
+/// Drop the value behind `token`, releasing its slab entry. Called when the peer
+/// reports (via `releaseExternal`) that JS has GC'd the corresponding handle.
+pub fn release_external(token: u64) {
+    if let Some(map) = EXTERNAL_SLAB.lock().unwrap().as_mut() {
+        map.remove(&token);
+    }
+}
 
 impl<T: Send + 'static> Serialize for External<T> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -182,5 +203,15 @@ mod tests {
         let v = to_wire(&e).unwrap();
         let back: External<Vec<i32>> = from_wire(v).unwrap();
         assert_eq!(back.cloned(), Some(vec![10, 20, 30]));
+    }
+
+    #[test]
+    fn release_external_frees_the_slab_entry() {
+        let e = External::new(vec![1i32, 2, 3]);
+        let token = e.token;
+        assert!(e.with(|v| v.len()) == Some(3));
+        release_external(token);
+        // After release the handle resolves to nothing — no leak, no double-free.
+        assert_eq!(e.with(|v| v.len()), None);
     }
 }

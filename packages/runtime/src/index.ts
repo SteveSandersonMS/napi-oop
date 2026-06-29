@@ -44,6 +44,10 @@ export {
   type Role,
 } from './messages';
 
+/** Opaque handle to a provider-side value (napi-rs `External<T>`). JS holds only
+ *  a token; the value lives in the provider and is released when this is GC'd. */
+export type ExternalObject = { readonly __napi_ext: number };
+
 /** Env var a parent uses to pass the named-socket path to a spawned child. */
 export const SOCKET_ENV = 'NAPI_OOP_SOCKET';
 

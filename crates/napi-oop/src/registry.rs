@@ -91,11 +91,28 @@ pub fn dispatch(request: Request, callbacks: &Arc<dyn Callbacks>) -> Message {
         Some(registered) => {
             // Guard against a function panicking: an unwind would otherwise kill
             // the worker thread without ever replying, leaving the caller hung.
+            let before = crate::types::external_mint_count();
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 (registered.dispatch)(args, callbacks)
             }));
+            let minted = crate::types::external_mint_count().saturating_sub(before);
             match outcome {
-                Ok(Ok(result)) => Message::Response(Response { id, result }),
+                Ok(Ok(result)) => {
+                    // Any External minted by this call must surface top-level, where
+                    // the TS finalizer can wrap it and drive release. A token nested
+                    // inside the result is unreachable for cleanup, so reject loudly
+                    // rather than leak it.
+                    if minted > top_level_externals(&result) {
+                        return Message::Error(ErrorMsg {
+                            id,
+                            message: format!(
+                                "function '{function}' returned an External nested below \
+                                 top level, which cannot be released; return it directly"
+                            ),
+                        });
+                    }
+                    Message::Response(Response { id, result })
+                }
                 Ok(Err(message)) => Message::Error(ErrorMsg { id, message }),
                 Err(panic) => Message::Error(ErrorMsg {
                     id,
@@ -118,5 +135,20 @@ fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
         s.clone()
     } else {
         "panic".to_string()
+    }
+}
+
+/// Count External markers reachable at the top level — the value itself, or the
+/// direct elements of a top-level array. Externals deeper than this can't be
+/// wrapped by the TS finalizer, so the dispatcher rejects calls that mint more.
+fn top_level_externals(v: &Value) -> u64 {
+    let is_marker = v
+        .as_map()
+        .map(|m| m.len() == 1 && m[0].0.as_str() == Some(crate::types::EXTERNAL_KEY))
+        .unwrap_or(false);
+    if is_marker {
+        1
+    } else {
+        0
     }
 }

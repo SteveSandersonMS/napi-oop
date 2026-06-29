@@ -47,6 +47,12 @@ export interface Release {
   handle: number;
 }
 
+/** Releases an External token so the provider drops its slab entry on GC. */
+export interface ReleaseExternal {
+  type: 'releaseExternal';
+  token: number;
+}
+
 /** Any message that may arrive from the peer. */
 export type Message = Hello | Request | Response | ErrorMsg | CallbackInvoke | Release;
 
@@ -54,3 +60,11 @@ export type Message = Hello | Request | Response | ErrorMsg | CallbackInvoke | R
 export interface CallbackRef {
   __napi_cb: number;
 }
+
+/** Wire marker for a provider-held External value: `{ __napi_ext: <token> }`. */
+export interface ExternalRef {
+  __napi_ext: number;
+}
+
+/** Key identifying an External marker on the wire. */
+export const EXTERNAL_KEY = '__napi_ext';

@@ -15,9 +15,14 @@ export function camelToSnake(name: string): string {
 /**
  * Wrap a peer as a typed object of async functions. Each property access yields
  * a function that calls the correspondingly-named Rust function and resolves
- * with its return value.
+ * with its return value. Functions named in `externalFns` return an External
+ * handle; the result is registered for GC-driven release of the provider slab.
  */
-export function createBinding<T extends object>(peer: Peer): T {
+export function createBinding<T extends object>(
+  peer: Peer,
+  externalFns: readonly string[] = []
+): T {
+  const externalSet = new Set(externalFns);
   const cache = new Map<string, (...args: unknown[]) => Promise<unknown>>();
   return new Proxy({} as T, {
     get(_target, property) {
@@ -25,7 +30,12 @@ export function createBinding<T extends object>(peer: Peer): T {
       let fn = cache.get(property);
       if (!fn) {
         const wireName = camelToSnake(property);
-        fn = (...args: unknown[]) => peer.call(wireName, args);
+        const tracks = externalSet.has(property);
+        fn = async (...args: unknown[]) => {
+          const result = await peer.call(wireName, args);
+          if (tracks) peer.trackExternal(result);
+          return result;
+        };
         cache.set(property, fn);
       }
       return fn;

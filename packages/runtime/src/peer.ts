@@ -7,6 +7,7 @@ import type { Socket } from 'net';
 import { createFrameDecoder, encodeFrame } from './framing';
 import {
   CallbackRef,
+  EXTERNAL_KEY,
   Hello,
   Message,
   PROTOCOL_VERSION,
@@ -29,6 +30,16 @@ export class Peer {
   private readonly callbacks = new Map<number, Callback>();
   private nextHandle = 1;
   private closed = false;
+  /** Releases provider-side External slab entries when the JS handle is GC'd. */
+  private readonly externals = new FinalizationRegistry<number>((token) => {
+    if (!this.closed) this.socket.write(encodeFrame({ type: 'releaseExternal', token }));
+  });
+
+  /** Register a returned External marker so its slab entry is freed on GC. */
+  trackExternal(value: unknown): void {
+    const token = externalToken(value);
+    if (token !== undefined) this.externals.register(value as object, token);
+  }
 
   private constructor(
     private readonly socket: Socket,
@@ -155,4 +166,13 @@ export class Peer {
     }
     this.pending.clear();
   }
+}
+
+/** Return the token if `v` is a top-level `{ __napi_ext }` marker, else undefined. */
+function externalToken(v: unknown): number | undefined {
+  if (v && typeof v === 'object' && EXTERNAL_KEY in v) {
+    const t = (v as Record<string, unknown>)[EXTERNAL_KEY];
+    return typeof t === 'number' ? t : undefined;
+  }
+  return undefined;
 }

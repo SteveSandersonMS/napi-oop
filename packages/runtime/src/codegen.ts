@@ -66,6 +66,14 @@ function asyncFnsLiteral(manifest: Manifest): string {
   return `[${names.join(', ')}]`;
 }
 
+/** Array literal of fns returning a top-level External, for GC-driven release. */
+function externalFnsLiteral(manifest: Manifest): string {
+  const names = manifest.functions
+    .filter((f) => f.ret === 'ExternalObject')
+    .map((f) => `'${f.jsName}'`);
+  return `[${names.join(', ')}]`;
+}
+
 /** Render the `.d.ts`: an async interface (`Promise<T>`) and a sync one (`T`). */
 export function generateDts(manifest: Manifest, name = 'Bindings'): string {
   const asyncMethods = manifest.functions
@@ -75,7 +83,7 @@ export function generateDts(manifest: Manifest, name = 'Bindings'): string {
     .map((f) => `  ${f.jsName}(${paramList(f)}): ${syncRet(f)};`)
     .join('\n');
   return `// Generated from the Rust #[napi] manifest. Do not edit.
-import type { Peer, SyncProvider } from '@napi-oop/runtime';
+import type { ExternalObject, Peer, SyncProvider } from '@napi-oop/runtime';
 
 export interface ${name} {
 ${asyncMethods}
@@ -96,8 +104,9 @@ export function generateJs(manifest: Manifest): string {
 const { createBinding, createSyncBinding } = require('@napi-oop/runtime');
 
 const asyncFns = ${asyncFnsLiteral(manifest)};
+const externalFns = ${externalFnsLiteral(manifest)};
 
-exports.bind = (peer) => createBinding(peer);
+exports.bind = (peer) => createBinding(peer, externalFns);
 exports.bindSync = (provider) => createSyncBinding(provider, asyncFns);
 `;
 }
@@ -112,7 +121,15 @@ export function generateTs(manifest: Manifest, name = 'Bindings'): string {
     .map((f) => `  ${f.jsName}(${paramList(f)}): ${syncRet(f)};`)
     .join('\n');
   return `// Generated from the Rust #[napi] manifest. Do not edit.
-import { createBinding, createSyncBinding, type Peer, type SyncProvider } from '@napi-oop/runtime';
+import {
+  createBinding,
+  createSyncBinding,
+  type ExternalObject,
+  type Peer,
+  type SyncProvider,
+} from '@napi-oop/runtime';
+
+export type { ExternalObject };
 
 export interface ${name} {
 ${asyncMethods}
@@ -123,8 +140,9 @@ ${syncMethods}
 }
 
 const asyncFns = ${asyncFnsLiteral(manifest)};
+const externalFns = ${externalFnsLiteral(manifest)};
 
-export const bind = (peer: Peer): ${name} => createBinding<${name}>(peer);
+export const bind = (peer: Peer): ${name} => createBinding<${name}>(peer, externalFns);
 export const bindSync = (provider: SyncProvider): ${name}Sync =>
   createSyncBinding<${name}Sync>(provider, asyncFns);
 `;

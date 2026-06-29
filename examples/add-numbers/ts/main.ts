@@ -51,6 +51,13 @@ async function callAddNumbers(peer: Peer): Promise<void> {
     tsteps.push(running);
   });
   console.log(`[${role}] sumEachTsfn => ${tt}, steps=[${tsteps.join(', ')}]`);
+
+  // External handle: an opaque token round-trips back to read the held value.
+  // Top-level handles are GC-tracked, so the provider's slab entry is released
+  // when the JS handle is collected — no leak.
+  const counter = await native.makeCounter(41);
+  const value = await native.readCounter(counter);
+  console.log(`[${role}] readCounter(makeCounter(41)) = ${value}`);
 }
 
 async function main(): Promise<void> {

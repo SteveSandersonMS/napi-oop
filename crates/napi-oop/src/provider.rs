@@ -80,6 +80,7 @@ pub fn serve(mut stream: Stream) -> io::Result<()> {
                     break;
                 }
             }
+            Some(Message::ReleaseExternal(r)) => crate::types::release_external(r.token),
             Some(_other) => {}
         }
     }

@@ -104,6 +104,18 @@ pub fn read_external(handle: napi_oop::External<i32>) -> i32 {
     handle.cloned().unwrap_or(-1)
 }
 
+/// Mints an External but buries it in a struct — must be rejected, since the TS
+/// finalizer only reaches top-level handles and a nested one would leak.
+#[derive(Serialize, Deserialize)]
+pub struct Wrapped {
+    inner: napi_oop::External<i32>,
+}
+
+#[napi]
+pub fn nested_external(seed: i32) -> Wrapped {
+    Wrapped { inner: napi_oop::External::new(seed) }
+}
+
 fn call(function: &str, id: u64, args: Vec<Value>) -> Message {
     let cb: std::sync::Arc<dyn registry::Callbacks> = std::sync::Arc::new(registry::NoCallbacks);
     registry::dispatch(Request {
@@ -344,4 +356,12 @@ fn external_round_trips_via_token_through_dispatch() {
     let m = napi_oop::manifest::manifest();
     let f = m.functions.iter().find(|f| f.rust_name == "read_external").unwrap();
     assert_eq!(f.params, vec!["ExternalObject"]);
+}
+
+#[test]
+fn nested_external_is_rejected_not_leaked() {
+    match call("nested_external", 24, vec![Value::from(7i64)]) {
+        Message::Error(e) => assert!(e.message.contains("nested"), "got: {}", e.message),
+        other => panic!("expected error for nested external, got {other:?}"),
+    }
 }

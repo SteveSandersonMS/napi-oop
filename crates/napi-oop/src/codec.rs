@@ -86,6 +86,13 @@ pub struct Release {
     pub handle: HandleId,
 }
 
+/// Release an `External` token so the provider can drop its slab entry. Sent by
+/// the caller when JS has GC'd the corresponding handle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReleaseExternal {
+    pub token: u64,
+}
+
 /// The full set of messages carried over the wire. Internally tagged on a
 /// `type` field, so encoded frames look like `{ type: "request", id, fn, args }`
 /// — directly mirrored by the Node runtime.
@@ -98,6 +105,7 @@ pub enum Message {
     Error(ErrorMsg),
     CallbackInvoke(CallbackInvoke),
     Release(Release),
+    ReleaseExternal(ReleaseExternal),
 }
 
 /// Write a single length-prefixed MessagePack frame and flush it.
