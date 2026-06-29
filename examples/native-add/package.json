@@ -1,5 +1,5 @@
 {
-  "name": "@napi-oop/example-native-add",
+  "name": "napi-oop-example-native-add",
   "version": "0.1.0",
   "private": true,
   "description": "Example: same #[napi] source built in-proc as a real native .node addon",

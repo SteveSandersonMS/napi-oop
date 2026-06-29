@@ -1,5 +1,5 @@
 {
-  "name": "@napi-oop/e2e",
+  "name": "napi-oop-e2e",
   "version": "0.1.0",
   "private": true,
   "description": "Cross-process E2E tests: build the fixture provider, codegen its bindings, compile TS, then assert real two-process behaviour.",
@@ -12,7 +12,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@napi-oop/runtime": "^0.1.0"
+    "napi-oop-runtime": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

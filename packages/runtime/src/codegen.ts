@@ -83,7 +83,7 @@ export function generateDts(manifest: Manifest, name = 'Bindings'): string {
     .map((f) => `  ${f.jsName}(${paramList(f)}): ${syncRet(f)};`)
     .join('\n');
   return `// Generated from the Rust #[napi] manifest. Do not edit.
-import type { ExternalObject, Peer, SyncProvider } from '@napi-oop/runtime';
+import type { ExternalObject, Peer, SyncProvider } from 'napi-oop-runtime';
 
 export interface ${name} {
 ${asyncMethods}
@@ -101,7 +101,7 @@ export declare function bindSync(provider: SyncProvider): ${name}Sync;
 /** Render the `.js`: thin factories over the runtime's bindings. */
 export function generateJs(manifest: Manifest): string {
   return `// Generated from the Rust #[napi] manifest. Do not edit.
-const { createBinding, createSyncBinding } = require('@napi-oop/runtime');
+const { createBinding, createSyncBinding } = require('napi-oop-runtime');
 
 const asyncFns = ${asyncFnsLiteral(manifest)};
 const externalFns = ${externalFnsLiteral(manifest)};
@@ -127,7 +127,7 @@ import {
   type ExternalObject,
   type Peer,
   type SyncProvider,
-} from '@napi-oop/runtime';
+} from 'napi-oop-runtime';
 
 export type { ExternalObject };
 

@@ -4,7 +4,7 @@
 
 import { join } from 'path';
 
-import { launchProviderSync } from '@napi-oop/runtime';
+import { launchProviderSync } from 'napi-oop-runtime';
 
 import { bindSync } from './generated/bindings';
 

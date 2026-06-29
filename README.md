@@ -23,7 +23,7 @@ crates/
   napi-oop-facade/          # crate published as `napi`: keeps source on the napi:: path,
                             #   re-exporting napi-rs (in-proc) or napi-oop shims (out-of-proc)
 packages/
-  runtime/                  # @napi-oop/runtime — Node-side runtime (TypeScript)
+  runtime/                  # napi-oop-runtime — Node-side runtime (TypeScript)
 examples/
   add-numbers/              # out-of-process: TS entrypoint calling Rust add_numbers
   tokio-fetch/              # out-of-process: concurrent tokio-backed async calls
@@ -53,13 +53,13 @@ This is both a Cargo workspace (`crates/*`, `examples/*`) and an npm workspace
 cargo build                                   # build all Rust crates
 cargo test --workspace                        # run the Rust tests
 npm install                                   # install npm workspaces
-npm run build -w @napi-oop/runtime            # build the Node runtime package
-npm run build -w @napi-oop/example-add-numbers  # build the example (cargo + tsc)
+npm run build -w napi-oop-runtime            # build the Node runtime package
+npm run build -w napi-oop-example-add-numbers  # build the example (cargo + tsc)
 
 # Run it (symmetric bootstrap — either process can be the parent):
-npm run start:node-parent -w @napi-oop/example-add-numbers  # Node spawns Rust
-npm run start:rust-parent -w @napi-oop/example-add-numbers  # Rust spawns Node
-npm run start:sync        -w @napi-oop/example-add-numbers  # blocking/sync call
+npm run start:node-parent -w napi-oop-example-add-numbers  # Node spawns Rust
+npm run start:rust-parent -w napi-oop-example-add-numbers  # Rust spawns Node
+npm run start:sync        -w napi-oop-example-add-numbers  # blocking/sync call
 ```
 
 Both print `addNumbers(2, 3) = 5`. The parent generates a named-socket path and
@@ -71,8 +71,8 @@ back. Rust stays the provider and Node the caller regardless of who is parent.
 `examples/native-add` builds the **same** `#[napi]` source as a native `.node`:
 
 ```bash
-npm run build -w @napi-oop/example-native-add  # napi build (.node + .d.ts) then tsc
-npm start     -w @napi-oop/example-native-add  # prints addNumbers(2, 3) = 5
+npm run build -w napi-oop-example-native-add  # napi build (.node + .d.ts) then tsc
+npm start     -w napi-oop-example-native-add  # prints addNumbers(2, 3) = 5
 ```
 
 `@napi-rs/cli` generates the loader and `.d.ts` from the type-def metadata; the TS

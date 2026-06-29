@@ -4,7 +4,7 @@
 
 import { join } from 'path';
 
-import { Peer, SOCKET_ENV, connectFromEnv, launchProvider } from '@napi-oop/runtime';
+import { Peer, SOCKET_ENV, connectFromEnv, launchProvider } from 'napi-oop-runtime';
 
 import { bind } from './generated/bindings';
 

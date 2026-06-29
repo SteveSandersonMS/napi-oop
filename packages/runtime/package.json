@@ -1,5 +1,5 @@
 {
-  "name": "@napi-oop/runtime",
+  "name": "napi-oop-runtime",
   "version": "0.1.0",
   "description": "Node-side runtime for napi-oop: connects to an out-of-process Rust peer.",
   "license": "MIT OR Apache-2.0",

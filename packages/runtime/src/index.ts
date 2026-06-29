@@ -1,4 +1,4 @@
-// @napi-oop/runtime — Node-side runtime for out-of-process napi.
+// napi-oop-runtime — Node-side runtime for out-of-process napi.
 //
 // Connects to a Rust provider over a path-based named socket (UDS on Unix /
 // named pipe on Windows via Node's `net`), never stdio. The bootstrap is

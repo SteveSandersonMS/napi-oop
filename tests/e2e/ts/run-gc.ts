@@ -5,7 +5,7 @@
 
 import { join } from 'path';
 
-import { launchProvider } from '@napi-oop/runtime';
+import { launchProvider } from 'napi-oop-runtime';
 
 import { bind, type Fixture, type ExternalObject } from './generated/bindings';
 

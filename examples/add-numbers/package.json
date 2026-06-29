@@ -1,5 +1,5 @@
 {
-  "name": "@napi-oop/example-add-numbers",
+  "name": "napi-oop-example-add-numbers",
   "version": "0.1.0",
   "private": true,
   "description": "Example: a TypeScript entrypoint calling an out-of-process Rust add_numbers function",
@@ -15,7 +15,7 @@
     "start:sync": "node dist/main-sync.js"
   },
   "dependencies": {
-    "@napi-oop/runtime": "^0.1.0"
+    "napi-oop-runtime": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

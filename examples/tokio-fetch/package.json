@@ -1,5 +1,5 @@
 {
-  "name": "@napi-oop/example-tokio-fetch",
+  "name": "napi-oop-example-tokio-fetch",
   "version": "0.1.0",
   "private": true,
   "description": "Example: a TypeScript entrypoint calling an out-of-process tokio-based async Rust function",
@@ -13,7 +13,7 @@
     "start:rust-parent": "node rust-parent.mjs"
   },
   "dependencies": {
-    "@napi-oop/runtime": "^0.1.0"
+    "napi-oop-runtime": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
