@@ -47,6 +47,16 @@ async function exercise(provider: SyncProvider) {
   const reversed = Array.from(native.reverseBytes(Buffer.from([1, 2, 3, 4])) as Uint8Array);
   const big = native.doubleBig(21n).toString();
 
+  // #[napi(object)] value struct: returned by value as a typed object with
+  // camelCase fields, and accepted back by value.
+  const point = native.makePoint(2, 3, 'p');
+  const pointLabel = point.labelText;
+  const pointDesc = native.describePoint(point);
+
+  // External<T> with a `&External<T>` param read provider-side via Deref.
+  const image = native.imageMake(4, 5);
+  const imageArea = native.imageArea(image);
+
   const handle = native.makeCounter(7);
   const counter = native.readCounter(handle);
 
@@ -76,6 +86,9 @@ async function exercise(provider: SyncProvider) {
     tsfnSteps,
     reversed,
     big,
+    pointLabel,
+    pointDesc,
+    imageArea,
     counter,
     afterAdd,
     value,

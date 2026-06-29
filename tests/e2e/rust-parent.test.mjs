@@ -20,6 +20,9 @@ test('rust-parent: every flow with Rust spawning Node', async () => {
   assert.equal(r.tsfnSum, 60);
   assert.deepEqual(r.reversed, [4, 3, 2, 1]);
   assert.equal(r.big, '42');
+  assert.equal(r.pointLabel, 'p', 'object field exposed camelCased');
+  assert.equal(r.pointDesc, 'p=(2,3)', 'object decoded back by value');
+  assert.equal(r.imageArea, 20, '&External<T> derefs to inner value');
   assert.equal(r.counter, 7);
 
   // Class round-trips identically when Rust is the parent.

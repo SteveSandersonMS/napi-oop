@@ -22,6 +22,14 @@ test('node-parent: every flow over the real socket boundary', async () => {
   assert.deepEqual(r.tsfnSteps, [10, 30, 60]);
   assert.deepEqual(r.reversed, [4, 3, 2, 1]);
   assert.equal(r.big, '42');
+
+  // #[napi(object)] value struct: camelCase field access + by-value arg.
+  assert.equal(r.pointLabel, 'p', 'object field exposed camelCased');
+  assert.equal(r.pointDesc, 'p=(2,3)', 'object decoded back by value');
+
+  // External<T> read provider-side through a &External<T> param via Deref.
+  assert.equal(r.imageArea, 20, '&External<T> derefs to inner value');
+
   assert.equal(r.counter, 7);
 
   // Class: sync ctor + async mutate + sync getter + async cross-method return.

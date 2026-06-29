@@ -41,18 +41,54 @@ mod in_proc {
 mod out_of_proc {
     use proc_macro::TokenStream;
     use quote::{format_ident, quote, ToTokens};
-    use syn::{parse_macro_input, FnArg, ImplItem, Item, ItemFn, ItemImpl, PatType};
+    use syn::{parse_macro_input, FnArg, ImplItem, Item, ItemFn, ItemImpl, ItemStruct, PatType};
 
     /// Out-of-process mode. Free fns get a dispatch thunk + registration; class
     /// `impl` blocks get a thunk per method/constructor (each keyed `Class.method`)
     /// plus class metadata; plain structs/objects pass through (serde carries them).
-    pub(super) fn expand(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    pub(super) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
+        // `#[napi(object)]` marks a plain value struct that crosses the boundary
+        // by serde; everything else dispatches on the item kind.
+        let is_object = attr.to_string().split(|c: char| !c.is_alphanumeric()).any(|t| t == "object");
         let parsed = parse_macro_input!(item as Item);
         match parsed {
             Item::Fn(func) => expand_fn(func),
             Item::Impl(imp) => expand_impl(imp),
+            Item::Struct(s) if is_object => expand_object(s),
             other => quote!(#other).into(),
         }
+    }
+
+    /// A `#[napi(object)]` struct: a plain value type carried by serde. Inject the
+    /// serde derives (camelCase fields, matching napi-rs's JS field naming) so the
+    /// struct round-trips over the wire, and register its field shape so the TS
+    /// generator emits a matching `interface` instead of `unknown`.
+    fn expand_object(item: ItemStruct) -> TokenStream {
+        let name = item.ident.to_string();
+        let mut field_names = Vec::new();
+        let mut field_types = Vec::new();
+        for field in &item.fields {
+            let Some(ident) = &field.ident else { continue };
+            field_names.push(ident.to_string());
+            let ty = &field.ty;
+            field_types.push(quote!(#ty).to_string().split_whitespace().collect::<String>());
+        }
+        let expanded = quote! {
+            #[derive(::napi_oop::serde::Serialize, ::napi_oop::serde::Deserialize)]
+            #[serde(crate = "::napi_oop::serde", rename_all = "camelCase")]
+            #item
+
+            const _: () = {
+                ::napi_oop::inventory::submit! {
+                    ::napi_oop::registry::RegisteredObject {
+                        name: #name,
+                        field_names: &[#(#field_names),*],
+                        field_types: &[#(#field_types),*],
+                    }
+                }
+            };
+        };
+        expanded.into()
     }
 
     fn expand_fn(func: ItemFn) -> TokenStream {
@@ -111,6 +147,13 @@ mod out_of_proc {
                         ::napi_oop::ThreadsafeFunction::__new(__h, ::std::sync::Arc::clone(__cb))
                     };
                 }
+            } else if let Some(owned) = external_ref_inner(ty) {
+                // `&External<T>`: decode the owned handle (slab lookup) and bind it;
+                // the call site borrows it.
+                quote! {
+                    let #ident: #owned = ::napi_oop::wire::from_wire(__iter.next().unwrap())
+                        .map_err(|e| ::std::string::ToString::to_string(&e))?;
+                }
             } else {
                 quote! {
                     let #ident: #ty = ::napi_oop::wire::from_wire(__iter.next().unwrap())
@@ -146,10 +189,12 @@ mod out_of_proc {
         // dispatch thunk drives the future to completion; the manifest marks the
         // fn async so the generator emits `Promise<T>` even for the sync binding.
         let is_async = func.sig.asyncness.is_some();
+        let call_args: Vec<_> =
+            arg_idents.iter().zip(arg_types.iter()).map(|(id, ty)| call_arg_token(id, ty)).collect();
         let call_expr = if is_async {
-            quote! { ::napi_oop::block_on(#fn_name(#(#arg_idents),*)) }
+            quote! { ::napi_oop::block_on(#fn_name(#(#call_args),*)) }
         } else {
-            quote! { #fn_name(#(#arg_idents),*) }
+            quote! { #fn_name(#(#call_args),*) }
         };
 
         // A `Result<T, E>` Err maps to an error reply (mirroring napi-rs's throw);
@@ -294,6 +339,8 @@ mod out_of_proc {
         let arity = arg_types.len();
         let arg_idents: Vec<_> = (0..arity).map(|i| format_ident!("__arg{i}")).collect();
         let decode = arg_idents.iter().zip(arg_types.iter()).map(decode_arg);
+        let call_args: Vec<_> =
+            arg_idents.iter().zip(arg_types.iter()).map(|(id, ty)| call_arg_token(id, ty)).collect();
         let param_strs: Vec<String> = arg_types.iter().map(ts_param).collect();
         let is_async = method.sig.asyncness.is_some();
         let ret_ok = result_ok_type(&method.sig.output);
@@ -312,7 +359,7 @@ mod out_of_proc {
         let takes_self = matches!(method.sig.inputs.first(), Some(FnArg::Receiver(_)));
         let m_ident2 = m_ident.clone();
         let body = if is_ctor {
-            let call = quote!(#self_ty::#m_ident2(#(#arg_idents),*));
+            let call = quote!(#self_ty::#m_ident2(#(#call_args),*));
             let wrap = if ret_ok.is_some() { quote!(match __ret { Ok(v)=>v, Err(e)=>return Err(::std::string::ToString::to_string(&e)) }) } else { quote!(__ret) };
             quote! {
                 let mut __iter = __args.into_iter();
@@ -323,7 +370,7 @@ mod out_of_proc {
                 ::core::result::Result::Ok(::napi_oop::wire::external_marker(__tok))
             }
         } else if takes_self {
-            let call = if is_async { quote!(::napi_oop::block_on(__self.#m_ident2(#(#arg_idents),*))) } else { quote!(__self.#m_ident2(#(#arg_idents),*)) };
+            let call = if is_async { quote!(::napi_oop::block_on(__self.#m_ident2(#(#call_args),*))) } else { quote!(__self.#m_ident2(#(#call_args),*)) };
             if ret_is_class {
                 // Mint the returned instance AFTER releasing the slab lock; minting
                 // inside `with_object` would re-enter the slab mutex and deadlock.
@@ -348,7 +395,7 @@ mod out_of_proc {
             }
         } else {
             // associated fn (static) — treat like a free fn
-            let call = if is_async { quote!(::napi_oop::block_on(#self_ty::#m_ident2(#(#arg_idents),*))) } else { quote!(#self_ty::#m_ident2(#(#arg_idents),*)) };
+            let call = if is_async { quote!(::napi_oop::block_on(#self_ty::#m_ident2(#(#call_args),*))) } else { quote!(#self_ty::#m_ident2(#(#call_args),*)) };
             let encode = method_encode(&ret_ok, ret_is_class);
             quote! { let mut __iter = __args.into_iter(); #(#decode)* let __ret = #call; #encode }
         };
@@ -406,6 +453,8 @@ mod out_of_proc {
             quote! { let #ident = { let __h = ::napi_oop::wire::callback_handle(&__iter.next().unwrap()).map_err(|e| ::std::string::ToString::to_string(&e))?; let __cbh = ::napi_oop::tsfn::CallbackHandle::new(__h, ::std::sync::Arc::clone(__cb)); move |#(#cb: #inputs),*| { __cbh.invoke(::std::vec![#(::napi_oop::wire::to_wire(&#cb).unwrap()),*]); } }; }
         } else if tsfn_inner(ty).is_some() {
             quote! { let #ident = { let __h = ::napi_oop::wire::callback_handle(&__iter.next().unwrap()).map_err(|e| ::std::string::ToString::to_string(&e))?; ::napi_oop::ThreadsafeFunction::__new(__h, ::std::sync::Arc::clone(__cb)) }; }
+        } else if let Some(owned) = external_ref_inner(ty) {
+            quote! { let #ident: #owned = ::napi_oop::wire::from_wire(__iter.next().unwrap()).map_err(|e| ::std::string::ToString::to_string(&e))?; }
         } else {
             quote! { let #ident: #ty = ::napi_oop::wire::from_wire(__iter.next().unwrap()).map_err(|e| ::std::string::ToString::to_string(&e))?; }
         }
@@ -432,6 +481,33 @@ mod out_of_proc {
             }
         }
         None
+    }
+
+    /// If `ty` is `&External<T>` (an immutable reference to an external handle),
+    /// return the owned `External<T>` type. Such a param is decoded by value (the
+    /// `Deserialize` impl rebuilds the handle from the slab) and passed by
+    /// reference at the call site, mirroring napi-rs's `&External<T>` signatures.
+    fn external_ref_inner(ty: &syn::Type) -> Option<syn::Type> {
+        let syn::Type::Reference(r) = ty else { return None };
+        if r.mutability.is_some() {
+            return None;
+        }
+        let syn::Type::Path(p) = &*r.elem else { return None };
+        if p.path.segments.last()?.ident == "External" {
+            Some((*r.elem).clone())
+        } else {
+            None
+        }
+    }
+
+    /// The token used to pass a decoded arg at the call site: by reference for
+    /// `&External<T>` params (decoded by value), otherwise the value directly.
+    fn call_arg_token(ident: &syn::Ident, ty: &syn::Type) -> proc_macro2::TokenStream {
+        if external_ref_inner(ty).is_some() {
+            quote!(&#ident)
+        } else {
+            quote!(#ident)
+        }
     }
 
     /// If `ty` is `ThreadsafeFunction<T>`, return `T`. Used to recognise the

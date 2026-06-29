@@ -53,19 +53,41 @@ pub enum ThreadsafeFunctionCallMode {
 /// A peer-held JS callback that can be stored and invoked later from any thread.
 /// Construct one only from generated glue. Cheap to clone; firing is one-way.
 /// The peer handle is released when the last clone drops.
-pub struct ThreadsafeFunction<T: Serialize> {
+///
+/// The generic arity mirrors napi-rs's `ThreadsafeFunction`, which carries a
+/// pile of type/const parameters (return type, call-args type, error-status
+/// type, callee-handled / weak flags, max-queue-size) to tune the in-process
+/// N-API call. Out-of-process only the payload type `T` matters — calls are
+/// always queued, fire-and-forget — so every other parameter is a defaulted
+/// phantom kept purely for source compatibility, letting the 1-, 5-, and
+/// 7-argument forms in existing source all resolve.
+pub struct ThreadsafeFunction<
+    T,
+    Return = (),
+    CallJsBackArgs = (),
+    ErrorStatus = (),
+    const CALLEE_HANDLED: bool = true,
+    const WEAK: bool = false,
+    const MAX_QUEUE_SIZE: usize = 0,
+> {
     inner: Arc<CallbackHandle>,
-    _marker: PhantomData<fn(T)>,
+    _marker: PhantomData<fn(T, Return, CallJsBackArgs, ErrorStatus)>,
 }
 
-impl<T: Serialize> ThreadsafeFunction<T> {
+impl<T, R, C, S, const A: bool, const W: bool, const M: usize>
+    ThreadsafeFunction<T, R, C, S, A, W, M>
+{
     /// Build from a decoded handle and the shared callback sink. Called by the
     /// `#[napi]` macro; not part of the user surface.
     #[doc(hidden)]
     pub fn __new(handle: HandleId, sink: Arc<dyn Callbacks>) -> Self {
         Self { inner: CallbackHandle::new(handle, sink), _marker: PhantomData }
     }
+}
 
+impl<T: Serialize, R, C, S, const A: bool, const W: bool, const M: usize>
+    ThreadsafeFunction<T, R, C, S, A, W, M>
+{
     /// Fire the callback with `value`. Non-blocking and result-less, matching
     /// napi's default: the value is queued to the peer's event loop.
     pub fn call(&self, value: T, _mode: ThreadsafeFunctionCallMode) {
@@ -75,7 +97,9 @@ impl<T: Serialize> ThreadsafeFunction<T> {
     }
 }
 
-impl<T: Serialize> Clone for ThreadsafeFunction<T> {
+impl<T, R, C, S, const A: bool, const W: bool, const M: usize> Clone
+    for ThreadsafeFunction<T, R, C, S, A, W, M>
+{
     fn clone(&self) -> Self {
         Self { inner: Arc::clone(&self.inner), _marker: PhantomData }
     }

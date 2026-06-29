@@ -90,7 +90,7 @@ pub fn reverse_bytes(b: napi_oop::Buffer) -> napi_oop::Buffer {
 /// BigInt round-trips as an opaque u64 handle; double the handle value.
 #[napi]
 pub fn double_handle(n: napi_oop::BigInt) -> napi_oop::BigInt {
-    napi_oop::BigInt::from(n.words.wrapping_mul(2))
+    napi_oop::BigInt::from(n.get_u64().1.wrapping_mul(2))
 }
 
 /// External round-trips as a token; create then read back through the slab.
@@ -333,7 +333,7 @@ fn bigint_round_trips_through_dispatch() {
     let big = Value::from(21u64);
     match call("double_handle", 21, vec![big]) {
         Message::Response(r) => {
-            assert_eq!(from_wire::<napi_oop::BigInt>(r.result).unwrap().words, 42);
+            assert_eq!(from_wire::<napi_oop::BigInt>(r.result).unwrap().get_u64().1, 42);
         }
         other => panic!("expected response, got {other:?}"),
     }
@@ -358,10 +358,84 @@ fn external_round_trips_via_token_through_dispatch() {
     assert_eq!(f.params, vec!["ExternalObject"]);
 }
 
+/// A `#[napi(object)]` value struct: the macro injects serde (camelCase) and
+/// registers the field shape for the manifest. The snake_case field must surface
+/// camelCased on both the wire and the generated interface.
+#[napi(object)]
+pub struct Vec2 {
+    pub x: i32,
+    pub y: i32,
+    pub label_text: String,
+}
+
+#[napi]
+pub fn make_vec2(x: i32, y: i32, label_text: String) -> Vec2 {
+    Vec2 { x, y, label_text }
+}
+
+#[napi]
+pub fn vec2_label(v: Vec2) -> String {
+    v.label_text
+}
+
+/// A plain payload held behind an `External`, read via `Deref` through a
+/// `&External<T>` param — the borrow-by-handle path.
+pub struct Blob {
+    size: i32,
+}
+
+#[napi]
+pub fn blob_make(size: i32) -> napi_oop::External<Blob> {
+    napi_oop::External::new(Blob { size })
+}
+
+#[napi]
+pub fn blob_size(b: &napi_oop::External<Blob>) -> i32 {
+    b.size
+}
+
 #[test]
-fn nested_external_is_rejected_not_leaked() {
-    match call("nested_external", 24, vec![Value::from(7i64)]) {
-        Message::Error(e) => assert!(e.message.contains("nested"), "got: {}", e.message),
-        other => panic!("expected error for nested external, got {other:?}"),
+fn napi_object_round_trips_with_camel_case_fields() {
+    // Outbound: returned object is a MessagePack map with camelCase keys.
+    let result = match call("make_vec2", 30, vec![Value::from(2i64), Value::from(3i64), Value::from("p")]) {
+        Message::Response(r) => r.result,
+        other => panic!("expected response, got {other:?}"),
+    };
+    let map = result.as_map().expect("object is a map");
+    let keys: Vec<&str> = map.iter().filter_map(|(k, _)| k.as_str()).collect();
+    assert!(keys.contains(&"labelText"), "expected camelCase key, got {keys:?}");
+    assert!(!keys.contains(&"label_text"), "snake_case key leaked: {keys:?}");
+
+    // Inbound: an object arg with camelCase keys decodes back into the struct.
+    match call("vec2_label", 31, vec![result]) {
+        Message::Response(r) => assert_eq!(r.result.as_str(), Some("p")),
+        other => panic!("expected response, got {other:?}"),
     }
+
+    // Manifest: the object is a named interface; fns referencing it keep the name.
+    let m = napi_oop::manifest::manifest();
+    let obj = m.objects.iter().find(|o| o.name == "Vec2").expect("Vec2 registered");
+    assert_eq!(obj.field_names, vec!["x", "y", "labelText"]);
+    assert_eq!(obj.field_types, vec!["number", "number", "string"]);
+    let f = m.functions.iter().find(|f| f.rust_name == "make_vec2").unwrap();
+    assert_eq!(f.ret, "Vec2");
+    let g = m.functions.iter().find(|f| f.rust_name == "vec2_label").unwrap();
+    assert_eq!(g.params, vec!["Vec2"]);
+}
+
+#[test]
+fn external_ref_param_derefs_to_inner() {
+    let token = match call("blob_make", 40, vec![Value::from(21i64)]) {
+        Message::Response(r) => r.result,
+        other => panic!("expected response, got {other:?}"),
+    };
+    // `&External<Blob>` decodes the handle, looks it up in the slab, and reaches
+    // the inner value through Deref.
+    match call("blob_size", 41, vec![token]) {
+        Message::Response(r) => assert_eq!(r.result.as_i64(), Some(21)),
+        other => panic!("expected response, got {other:?}"),
+    }
+    let m = napi_oop::manifest::manifest();
+    let f = m.functions.iter().find(|f| f.rust_name == "blob_size").unwrap();
+    assert_eq!(f.params, vec!["ExternalObject"]);
 }

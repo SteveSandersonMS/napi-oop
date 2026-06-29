@@ -50,7 +50,58 @@ pub fn reverse_bytes(b: napi::Buffer) -> napi::Buffer {
 
 #[napi]
 pub fn double_big(n: napi::BigInt) -> napi::BigInt {
-    napi::BigInt::from(n.words.wrapping_mul(2))
+    // Exercise both `get_u64()` and the `words: Vec<u64>` struct-literal ctor,
+    // matching how handle-token APIs build a BigInt.
+    let (_sign, value, _lossless) = n.get_u64();
+    napi::BigInt { sign_bit: false, words: vec![value.wrapping_mul(2)] }
+}
+
+/// A `#[napi(object)]` value struct: a plain by-value record crossing the
+/// boundary by serde. The snake_case field proves camelCase exposure on TS.
+#[napi(object)]
+pub struct Point {
+    pub x: i32,
+    pub y: i32,
+    pub label_text: String,
+}
+
+/// Returns an object by value (round-trips as a MessagePack map, typed by the
+/// generated `Point` interface).
+#[napi]
+pub fn make_point(x: i32, y: i32, label_text: String) -> Point {
+    Point { x, y, label_text }
+}
+
+/// Takes an object by value and reads its fields, proving the inbound decode.
+#[napi]
+pub fn describe_point(p: Point) -> String {
+    format!("{}=({},{})", p.label_text, p.x, p.y)
+}
+
+/// A plain (non-`#[napi]`) payload held behind an `External` handle. Its fields
+/// are read provider-side via `Deref`, never serialized to JS.
+pub struct Image {
+    width: i32,
+    height: i32,
+}
+
+impl Image {
+    fn area(&self) -> i32 {
+        self.width * self.height
+    }
+}
+
+/// Mint an `External<Image>` handle (the value stays provider-side).
+#[napi]
+pub fn image_make(width: i32, height: i32) -> napi::External<Image> {
+    napi::External::new(Image { width, height })
+}
+
+/// Take `&External<Image>` and reach the inner value through `Deref`, exercising
+/// the borrow-by-handle path (the image fns in real workloads work this way).
+#[napi]
+pub fn image_area(img: &napi::External<Image>) -> i32 {
+    img.area()
 }
 
 #[napi]

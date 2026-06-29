@@ -78,6 +78,21 @@ pub struct RegisteredMethod {
 
 inventory::collect!(RegisteredMethod);
 
+/// One `#[napi(object)]` struct: a plain value type that crosses the boundary by
+/// serde (camelCase fields, matching napi-rs). Carries the field shape so the TS
+/// generator can emit a matching `interface`, rather than falling back to
+/// `unknown`. Field types are the Rust type strings, mapped to TS by the manifest.
+pub struct RegisteredObject {
+    /// Struct name, used verbatim as the TS interface name.
+    pub name: &'static str,
+    /// Field names in declaration order (snake_case; the generator camelCases them).
+    pub field_names: &'static [&'static str],
+    /// Field Rust types, in order, aligned with `field_names`.
+    pub field_types: &'static [&'static str],
+}
+
+inventory::collect!(RegisteredObject);
+
 /// A [`Callbacks`] that drops every invocation — for fns that take no callbacks
 /// and for tests. (Fire-and-forget, so dropping is observably "queued, ignored".)
 pub struct NoCallbacks;

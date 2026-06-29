@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -58,30 +58,36 @@ impl<'de> Deserialize<'de> for Buffer {
     }
 }
 
-/// Opaque 64-bit handle mirroring napi-rs's `BigInt`. Every BigInt that crosses
-/// this boundary is a handle token (fits u64), so the wire form is a single u64
-/// (matching the JS `bigint` MessagePack encoding), not a struct.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Opaque BigInt mirroring napi-rs's `BigInt`. The runtime uses these purely as
+/// 64-bit handle tokens, but the field layout matches napi-rs (`sign_bit` plus a
+/// `words` vector) so source that constructs `BigInt { sign_bit, words: vec![h] }`
+/// or calls `get_u64()` compiles unchanged. On the wire it is the single low word
+/// as a u64 (the JS `bigint` MessagePack encoding).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct BigInt {
     pub sign_bit: bool,
-    pub words: u64,
+    pub words: Vec<u64>,
 }
 
 impl BigInt {
+    /// Mirror napi-rs: `(sign_bit, low_word, lossless)`. `lossless` is false when
+    /// the value needs more than one 64-bit word (so it wouldn't fit a u64).
     pub fn get_u64(&self) -> (bool, u64, bool) {
-        (self.sign_bit, self.words, false)
+        let value = self.words.first().copied().unwrap_or(0);
+        let lossless = self.words.len() <= 1;
+        (self.sign_bit, value, lossless)
     }
 }
 
 impl From<u64> for BigInt {
-    fn from(words: u64) -> Self {
-        BigInt { sign_bit: false, words }
+    fn from(word: u64) -> Self {
+        BigInt { sign_bit: false, words: vec![word] }
     }
 }
 
 impl Serialize for BigInt {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_u64(self.words)
+        s.serialize_u64(self.words.first().copied().unwrap_or(0))
     }
 }
 
@@ -91,9 +97,19 @@ impl<'de> Deserialize<'de> for BigInt {
     }
 }
 
-/// Provider-side slab backing [`External`] tokens. The value lives here; JS only
-/// ever holds the integer token, so it round-trips without serializing the value.
-static EXTERNAL_SLAB: Mutex<Option<HashMap<u64, Box<dyn std::any::Any + Send>>>> = Mutex::new(None);
+/// A slab entry. Class instances are mutable and single-owner (`Box`, mutated in
+/// place via [`with_object`]); externals are shared and immutable (`Arc`, so an
+/// [`External`] handle can hand out a `&T` reference via `Deref`). Both ride the
+/// same token space and GC-release path.
+enum Slot {
+    Class(Box<dyn std::any::Any + Send>),
+    Ext(Arc<dyn std::any::Any + Send + Sync>),
+}
+
+/// Provider-side slab backing [`External`] tokens and class instances. The value
+/// lives here; JS only ever holds the integer token, so it round-trips without
+/// serializing the value.
+static EXTERNAL_SLAB: Mutex<Option<HashMap<u64, Slot>>> = Mutex::new(None);
 static EXTERNAL_NEXT: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
@@ -109,27 +125,27 @@ pub fn external_mint_count() -> u64 {
 }
 
 /// JS-held opaque handle to a Rust value mirroring napi-rs's `External<T>`. The
-/// value stays provider-side in a slab; only a u64 token crosses the boundary.
-pub struct External<T: Send + 'static> {
+/// value stays provider-side in a slab and is shared via `Arc`; only a u64 token
+/// crosses the boundary. Like napi-rs, `External<T>` derefs to `&T`, so source
+/// that calls inner methods/fields through the handle compiles unchanged.
+pub struct External<T: Send + Sync + 'static> {
     token: u64,
-    _marker: std::marker::PhantomData<T>,
+    value: Arc<T>,
 }
 
-impl<T: Send + 'static> External<T> {
+impl<T: Send + Sync + 'static> External<T> {
     pub fn new(value: T) -> Self {
         let token = EXTERNAL_NEXT.fetch_add(1, Ordering::Relaxed);
         MINTED.with(|c| c.set(c.get() + 1));
+        let value = Arc::new(value);
         let mut guard = EXTERNAL_SLAB.lock().unwrap();
-        guard.get_or_insert_with(HashMap::new).insert(token, Box::new(value));
-        External { token, _marker: std::marker::PhantomData }
+        guard.get_or_insert_with(HashMap::new).insert(token, Slot::Ext(value.clone()));
+        External { token, value }
     }
 
-    /// Run `f` against the held value, if the token is still live.
+    /// Run `f` against the held value. Always live (the `Arc` is held inline).
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
-        let guard = EXTERNAL_SLAB.lock().unwrap();
-        let map = guard.as_ref()?;
-        let any = map.get(&self.token)?;
-        any.downcast_ref::<T>().map(f)
+        Some(f(&self.value))
     }
 
     /// Drop the held value, releasing the slab entry.
@@ -140,10 +156,17 @@ impl<T: Send + 'static> External<T> {
     }
 }
 
-impl<T: Clone + Send + 'static> External<T> {
+impl<T: Send + Sync + 'static> Deref for External<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<T: Clone + Send + Sync + 'static> External<T> {
     /// Clone out the held value, mirroring how callers copy the inner data.
     pub fn cloned(&self) -> Option<T> {
-        self.with(|v| v.clone())
+        Some((*self.value).clone())
     }
 }
 
@@ -169,7 +192,7 @@ pub fn external_slab_len() -> usize {
 pub fn object_new(value: Box<dyn std::any::Any + Send>) -> u64 {
     let token = EXTERNAL_NEXT.fetch_add(1, Ordering::Relaxed);
     MINTED.with(|c| c.set(c.get() + 1));
-    EXTERNAL_SLAB.lock().unwrap().get_or_insert_with(HashMap::new).insert(token, value);
+    EXTERNAL_SLAB.lock().unwrap().get_or_insert_with(HashMap::new).insert(token, Slot::Class(value));
     token
 }
 
@@ -177,11 +200,23 @@ pub fn object_new(value: Box<dyn std::any::Any + Send>) -> u64 {
 pub fn with_object<T: 'static, R>(token: u64, f: impl FnOnce(&mut T) -> R) -> Option<R> {
     let mut guard = EXTERNAL_SLAB.lock().unwrap();
     let map = guard.as_mut()?;
-    let any = map.get_mut(&token)?;
-    any.downcast_mut::<T>().map(f)
+    match map.get_mut(&token)? {
+        Slot::Class(any) => any.downcast_mut::<T>().map(f),
+        Slot::Ext(_) => None,
+    }
 }
 
-impl<T: Send + 'static> Serialize for External<T> {
+/// Look up a live external by token and clone its `Arc<T>`. Used by the macro's
+/// `&External<T>` decode path to rebuild a handle pointing at the resident value.
+fn external_lookup<T: Send + Sync + 'static>(token: u64) -> Option<Arc<T>> {
+    let guard = EXTERNAL_SLAB.lock().unwrap();
+    match guard.as_ref()?.get(&token)? {
+        Slot::Ext(arc) => arc.clone().downcast::<T>().ok(),
+        Slot::Class(_) => None,
+    }
+}
+
+impl<T: Send + Sync + 'static> Serialize for External<T> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let mut m = s.serialize_map(Some(1))?;
@@ -190,13 +225,15 @@ impl<T: Send + 'static> Serialize for External<T> {
     }
 }
 
-impl<'de, T: Send + 'static> Deserialize<'de> for External<T> {
+impl<'de, T: Send + Sync + 'static> Deserialize<'de> for External<T> {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let map: HashMap<String, u64> = HashMap::deserialize(d)?;
         let token = *map
             .get(EXTERNAL_KEY)
             .ok_or_else(|| serde::de::Error::custom("not an external handle"))?;
-        Ok(External { token, _marker: std::marker::PhantomData })
+        let value = external_lookup::<T>(token)
+            .ok_or_else(|| serde::de::Error::custom("external handle no longer live"))?;
+        Ok(External { token, value })
     }
 }
 
@@ -232,9 +269,18 @@ mod tests {
     fn release_external_frees_the_slab_entry() {
         let e = External::new(vec![1i32, 2, 3]);
         let token = e.token;
-        assert!(e.with(|v| v.len()) == Some(3));
+        let wire = to_wire(&e).unwrap();
+        assert_eq!(e.with(|v| v.len()), Some(3));
         release_external(token);
-        // After release the handle resolves to nothing — no leak, no double-free.
-        assert_eq!(e.with(|v| v.len()), None);
+        // After release the token no longer resolves — no leak, no double-free.
+        assert!(from_wire::<External<Vec<i32>>>(wire).is_err());
+    }
+
+    #[test]
+    fn external_derefs_to_inner() {
+        let e = External::new(vec![7i32, 8, 9]);
+        // napi-rs External<T> derefs to &T; method calls go through the handle.
+        assert_eq!(e.len(), 3);
+        assert_eq!(e[1], 8);
     }
 }

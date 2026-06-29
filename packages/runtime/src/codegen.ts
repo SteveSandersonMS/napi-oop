@@ -25,10 +25,18 @@ export interface ClassSignature {
   methods: MethodSignature[];
 }
 
+/** A `#[napi(object)]` value struct, rendered as a TS `interface`. */
+export interface ObjectSignature {
+  name: string;
+  fieldNames: string[];
+  fieldTypes: string[];
+}
+
 /** The provider's exposed surface. */
 export interface Manifest {
   functions: FnSignature[];
   classes: ClassSignature[];
+  objects: ObjectSignature[];
 }
 
 /** Parse manifest JSON (camelCase keys come straight from serde rename). */
@@ -54,6 +62,11 @@ export function parseManifest(json: string): Manifest {
         is_getter: boolean;
       }[];
     }[];
+    objects?: {
+      name: string;
+      field_names: string[];
+      field_types: string[];
+    }[];
   };
   return {
     functions: raw.functions.map((f) => ({
@@ -75,6 +88,11 @@ export function parseManifest(json: string): Manifest {
         isAsync: m.is_async,
         isGetter: m.is_getter,
       })),
+    })),
+    objects: (raw.objects ?? []).map((o) => ({
+      name: o.name,
+      fieldNames: o.field_names,
+      fieldTypes: o.field_types,
     })),
   };
 }
@@ -113,6 +131,7 @@ export function generateTs(manifest: Manifest, name = 'Bindings'): string {
   // A function whose return type is a class name is a factory: its result is a
   // handle the binding wraps into the matching proxy.
   const factoryFns = manifest.functions.filter((f) => classNames.has(f.ret));
+  const objectDecls = manifest.objects.map(generateObject).join('\n\n');
   const methods = manifest.functions
     .map((f) => `  ${f.jsName}(${paramList(f)}): ${returnType(f)};`)
     .join('\n');
@@ -136,7 +155,7 @@ import {
 
 export type { ExternalObject };
 
-export interface ${name} {
+${objectDecls}${objectDecls ? '\n\n' : ''}export interface ${name} {
 ${methods}
 ${classProps}
 }
@@ -154,6 +173,16 @@ export const bind = (provider: SyncProvider): ${name} =>
     ${factoryMap}
   );
 `;
+}
+
+/** A single `#[napi(object)]` value struct, rendered as a plain TS `interface`.
+ *  Fields are by-value (camelCased on the Rust side already); the struct crosses
+ *  the boundary as a MessagePack map, so callers get real field types. */
+function generateObject(o: ObjectSignature): string {
+  const fields = o.fieldNames
+    .map((fieldName, i) => `  ${fieldName}: ${o.fieldTypes[i] ?? 'unknown'};`)
+    .join('\n');
+  return `export interface ${o.name} {\n${fields}\n}`;
 }
 
 /** A single TS class proxy. The instance holds a provider-side handle; each

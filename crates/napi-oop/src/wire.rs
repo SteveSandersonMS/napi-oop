@@ -40,8 +40,17 @@ impl std::fmt::Display for WireError {
 impl std::error::Error for WireError {}
 
 /// Encode a value into the dynamic wire representation.
+///
+/// Structs are encoded as **named maps** (not positional arrays): a
+/// `#[napi(object)]` value must reach JS as `{ field: … }` with named,
+/// camelCased keys, exactly like napi-rs. rmpv's own `to_value` serializes
+/// structs as arrays (dropping field names), so we serialize through rmp-serde
+/// in `with_struct_map` mode and read the bytes back into an [`rmpv::Value`].
 pub fn to_wire<T: Serialize + ?Sized>(value: &T) -> Result<Value, WireError> {
-    rmpv::ext::to_value(value).map_err(|e| WireError(e.to_string()))
+    let mut buf = Vec::new();
+    let mut ser = rmp_serde::Serializer::new(&mut buf).with_struct_map();
+    value.serialize(&mut ser).map_err(|e| WireError(e.to_string()))?;
+    rmpv::decode::read_value(&mut &buf[..]).map_err(|e| WireError(e.to_string()))
 }
 
 /// Decode a value from the dynamic wire representation.
