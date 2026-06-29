@@ -158,6 +158,11 @@ pub fn release_external(token: u64) {
     }
 }
 
+/// Number of live External entries — for tests asserting GC-driven release.
+pub fn external_slab_len() -> usize {
+    EXTERNAL_SLAB.lock().unwrap().as_ref().map_or(0, |m| m.len())
+}
+
 impl<T: Send + 'static> Serialize for External<T> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;

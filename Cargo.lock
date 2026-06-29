@@ -171,6 +171,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "napi-oop-e2e-fixture"
+version = "0.1.0"
+dependencies = [
+ "napi-oop",
+ "napi-oop-facade",
+]
+
+[[package]]
 name = "napi-oop-facade"
 version = "0.1.0"
 dependencies = [

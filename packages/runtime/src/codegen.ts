@@ -139,8 +139,8 @@ export interface ${name}Sync {
 ${syncMethods}
 }
 
-const asyncFns = ${asyncFnsLiteral(manifest)};
-const externalFns = ${externalFnsLiteral(manifest)};
+const asyncFns: string[] = ${asyncFnsLiteral(manifest)};
+const externalFns: string[] = ${externalFnsLiteral(manifest)};
 
 export const bind = (peer: Peer): ${name} => createBinding<${name}>(peer, externalFns);
 export const bindSync = (provider: SyncProvider): ${name}Sync =>

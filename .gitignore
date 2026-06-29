@@ -13,3 +13,4 @@ dist/
 examples/add-numbers/ts/generated/
 examples/tokio-fetch/ts/generated/
 examples/native-add/target/
+tests/e2e/ts/generated/

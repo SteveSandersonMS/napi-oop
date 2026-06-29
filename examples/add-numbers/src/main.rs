@@ -55,19 +55,6 @@ pub fn sum_each_tsfn(values: Vec<i32>, on_step: napi::ThreadsafeFunction<i32>) -
     total
 }
 
-/// Returns an opaque handle (`External`) to a Rust value. Top-level externals
-/// are tracked by JS and released on GC; nesting one in a struct is rejected.
-#[napi]
-pub fn make_counter(start: i32) -> napi::External<i32> {
-    napi::External::new(start)
-}
-
-/// Reads a value back from a handle previously returned by `make_counter`.
-#[napi]
-pub fn read_counter(handle: napi::External<i32>) -> i32 {
-    handle.cloned().unwrap_or(-1)
-}
-
 fn main() {
     let mut argv = std::env::args().skip(1);
     let first = argv.next();

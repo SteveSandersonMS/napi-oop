@@ -5,7 +5,8 @@
   "description": "Out-of-process napi: run #[napi] Rust in a separate process from Node.",
   "workspaces": [
     "packages/*",
-    "examples/*"
+    "examples/*",
+    "tests/*"
   ],
   "devDependencies": {
     "@napi-rs/cli": "^2.18.4"

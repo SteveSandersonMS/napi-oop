@@ -6,6 +6,7 @@ members = [
     "crates/napi-oop-facade",
     "examples/add-numbers",
     "examples/tokio-fetch",
+    "tests/e2e/fixture",
 ]
 exclude = [
     "examples/native-add",

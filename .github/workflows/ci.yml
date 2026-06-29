@@ -20,3 +20,6 @@ jobs:
         with:
           node-version: 22
       - run: cargo test --workspace
+      - run: npm ci
+      - run: npm run -w @napi-oop/runtime build
+      - run: npm test -w @napi-oop/e2e

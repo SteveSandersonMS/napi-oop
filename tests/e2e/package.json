@@ -1,0 +1,21 @@
+{
+  "name": "@napi-oop/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cross-process E2E tests: build the fixture provider, codegen its bindings, compile TS, then assert real two-process behaviour.",
+  "scripts": {
+    "build:native": "cargo build --release -p napi-oop-e2e-fixture",
+    "build:types": "node ../../packages/runtime/dist/codegen-cli.js ../../target/release/e2e-provider ts/generated Fixture",
+    "build:ts": "tsc",
+    "build": "npm run build:native && npm run build:types && npm run build:ts",
+    "pretest": "npm run build",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@napi-oop/runtime": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

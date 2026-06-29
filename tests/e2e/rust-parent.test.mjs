@@ -1,0 +1,23 @@
+// E2E: Rust is the parent, spawning Node as a child that connects back over the
+// socket. Same flows, opposite parentage — proves the boundary is symmetric.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { run, parseResult } from './run.mjs';
+
+const here = new URL('.', import.meta.url);
+
+test('rust-parent: every flow with Rust spawning Node', async () => {
+  const { code, out } = await run('node', ['rust-parent.mjs'], here);
+  assert.equal(code, 0, out);
+  const r = parseResult(out);
+
+  assert.equal(r.role, 'rust-parent');
+  assert.equal(r.add, 5);
+  assert.deepEqual(r.multiply, [42, 72]);
+  assert.equal(r.sum, 60);
+  assert.deepEqual(r.sumSteps, [10, 30, 60]);
+  assert.equal(r.tsfnSum, 60);
+  assert.deepEqual(r.reversed, [4, 3, 2, 1]);
+  assert.equal(r.big, '42');
+  assert.equal(r.counter, 7);
+});

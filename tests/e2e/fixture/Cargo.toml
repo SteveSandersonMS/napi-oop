@@ -1,0 +1,13 @@
+[package]
+name = "napi-oop-e2e-fixture"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "e2e-provider"
+path = "src/main.rs"
+
+[dependencies]
+napi-oop = { path = "../../../crates/napi-oop" }
+napi = { package = "napi-oop-facade", path = "../../../crates/napi-oop-facade", features = ["out-of-proc"] }
