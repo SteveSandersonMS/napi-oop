@@ -86,6 +86,13 @@ async function exercise(provider: SyncProvider) {
   const snap = obj.snapshot();
   const snapTotal = snap.total;
 
+  // js_name divergence: a free fn (`bertShout`) and a method (`bertReset`) whose
+  // JS names are deliberately not the camelCase of their Rust names (`shout`,
+  // `reset`). They must be dispatched by the manifest's `rust_name`, not by
+  // `camelToSnake(jsName)` — otherwise the call reaches an unknown function.
+  const shout = native.bertShout('hi');
+  const reset = obj.bertReset();
+
   return {
     role: process.env[SOCKET_ENV] ? 'rust-parent' : 'node-parent',
     add,
@@ -111,6 +118,8 @@ async function exercise(provider: SyncProvider) {
     madeValue,
     tallyTotal,
     snapTotal,
+    shout,
+    reset,
   };
 }
 

@@ -39,8 +39,15 @@ pub type DispatchFn = fn(Vec<Value>, &Arc<dyn Callbacks>) -> Result<Value, Strin
 
 /// One registered `#[napi]` function, collected via [`inventory`].
 pub struct RegisteredFn {
-    /// The exported function name advertised to the peer.
+    /// The exported function name advertised to the peer. This is the wire name
+    /// the dispatcher routes on — the Rust function name (free fns) or
+    /// `Class.method` (methods) — and is independent of the JS-facing name.
     pub name: &'static str,
+    /// Explicit JS-facing name from `#[napi(js_name = "…")]`, or `""` if none was
+    /// given (in which case the manifest derives the camelCase form of `name`).
+    /// Dispatch never uses this; it only steers the surfaced TS name so the
+    /// out-of-proc surface matches what napi-rs would expose in-proc.
+    pub js_name: &'static str,
     /// The thunk that services a call to this function.
     pub dispatch: DispatchFn,
     /// The Rust type of each parameter, in declaration order (e.g. `["i64","i64"]`).

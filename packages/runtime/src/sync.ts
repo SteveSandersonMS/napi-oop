@@ -227,7 +227,13 @@ export function launchProviderSync(options: LaunchSyncOptions): SyncProvider {
  */
 /** A factory free fn that returns a class instance: its proxy class plus whether
  *  the Rust fn is `async` (dispatched non-blocking) or sync (blocking). */
-type Factory = { cls: { __fromHandle(p: SyncProvider, h: unknown): unknown }; isAsync: boolean };
+type Factory = {
+  cls: { __fromHandle(p: SyncProvider, h: unknown): unknown };
+  isAsync: boolean;
+  /** Provider-side dispatch key (Rust fn name). Falls back to `camelToSnake`
+   *  of the JS name when omitted, for factories without a `#[napi(js_name)]`. */
+  rustName?: string;
+};
 
 /**
  * Attach class proxies to a binding. Generated classes take the `SyncProvider`
@@ -252,8 +258,8 @@ export function bindClasses<T extends object>(
       }
     };
   }
-  for (const [name, { cls, isAsync }] of Object.entries(factories)) {
-    const wireName = camelToSnake(name);
+  for (const [name, { cls, isAsync, rustName }] of Object.entries(factories)) {
+    const wireName = rustName ?? camelToSnake(name);
     bound[name] = isAsync
       ? (...args: unknown[]) =>
           provider.callAsync(wireName, args).then((h) => cls.__fromHandle(provider, h))
@@ -280,7 +286,8 @@ export function connectFromEnvSync(): SyncProvider {
 export function createSyncBinding<T extends object>(
   provider: SyncProvider,
   asyncFns: readonly string[] = [],
-  externalFns: readonly string[] = []
+  externalFns: readonly string[] = [],
+  wireNames: Readonly<Record<string, string>> = {}
 ): T {
   const asyncSet = new Set(asyncFns);
   const externalSet = new Set(externalFns);
@@ -290,7 +297,11 @@ export function createSyncBinding<T extends object>(
       if (typeof property !== 'string') return undefined;
       let fn = cache.get(property);
       if (!fn) {
-        const wireName = camelToSnake(property);
+        // The wire name is the provider-side dispatch key (the Rust function
+        // name). It is `camelToSnake(jsName)` for the common case, but a fn
+        // declared with `#[napi(js_name = "…")]` has a JS name that is *not* the
+        // camelCase of its Rust name, so the manifest-derived map takes priority.
+        const wireName = wireNames[property] ?? camelToSnake(property);
         const isAsync = asyncSet.has(property);
         const tracks = externalSet.has(property);
         fn = isAsync

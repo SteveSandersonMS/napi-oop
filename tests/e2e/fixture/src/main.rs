@@ -67,6 +67,15 @@ pub fn double_big(n: napi::BigInt) -> napi::BigInt {
     }
 }
 
+/// A free function declared with an explicit `#[napi(js_name = "…")]`. The JS
+/// name (`bertShout`) is deliberately *not* the camelCase of the Rust name
+/// (`shout`), so the binding must dispatch by the manifest's `rust_name` rather
+/// than `camelToSnake(jsName)` — the regression this fixture guards.
+#[napi(js_name = "bertShout")]
+pub fn shout(text: String) -> String {
+    text.to_uppercase()
+}
+
 /// A `#[napi(object)]` value struct: a plain by-value record crossing the
 /// boundary by serde. The snake_case field proves camelCase exposure on TS.
 #[napi(object)]
@@ -163,6 +172,15 @@ impl Counter {
 
     #[napi(getter)]
     pub fn value(&self) -> i32 {
+        self.value
+    }
+
+    /// A method declared with `#[napi(js_name = "…")]`: the JS method name
+    /// (`bertReset`) diverges from the Rust name (`reset`), so the class proxy
+    /// must surface `bertReset` and dispatch by the `Counter.reset` wire name.
+    #[napi(js_name = "bertReset")]
+    pub fn reset(&mut self) -> i32 {
+        self.value = 0;
         self.value
     }
 

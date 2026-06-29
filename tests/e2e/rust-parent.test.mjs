@@ -35,4 +35,9 @@ test('rust-parent: every flow with Rust spawning Node', async () => {
   assert.equal(r.madeValue, 40);
   assert.equal(r.tallyTotal, 11, 'free-fn factory mints a non-Clone class by move');
   assert.equal(r.snapTotal, 8, 'cross-class method returns another class instance');
+
+  // #[napi(js_name = "…")]: JS names that diverge from the Rust names must still
+  // reach the right provider fn (dispatched by rust_name, not camelToSnake).
+  assert.equal(r.shout, 'HI', 'free fn with js_name dispatches by rust_name');
+  assert.equal(r.reset, 0, 'method with js_name dispatches by rust_name');
 });

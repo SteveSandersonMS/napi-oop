@@ -45,4 +45,9 @@ test('node-parent: every flow over the real socket boundary', async () => {
   // and as a cross-class method return (a method on one class returning another).
   assert.equal(r.tallyTotal, 11, 'free-fn factory mints a non-Clone class by move');
   assert.equal(r.snapTotal, 8, 'cross-class method returns another class instance');
+
+  // #[napi(js_name = "…")]: JS names that diverge from the Rust names must still
+  // reach the right provider fn (dispatched by rust_name, not camelToSnake).
+  assert.equal(r.shout, 'HI', 'free fn with js_name dispatches by rust_name');
+  assert.equal(r.reset, 0, 'method with js_name dispatches by rust_name');
 });

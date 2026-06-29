@@ -6,6 +6,9 @@
 // runtime up. The caller imports the generated module instead of hand-writing
 // interfaces — the same flow as napi-rs's generated `index.d.ts`.
 
+import { camelToSnake } from './binding';
+
+
 /** A single function's signature, as emitted by `napi_oop::manifest`. */
 export interface FnSignature {
   jsName: string;
@@ -122,6 +125,17 @@ function externalFnsLiteral(manifest: Manifest): string {
   return `[${names.join(', ')}]`;
 }
 
+/** Object literal of `jsName -> rustName` for fns whose provider-side dispatch
+ *  key isn't simply `camelToSnake(jsName)` — i.e. those declared with
+ *  `#[napi(js_name = "…")]`, where the JS name diverges from the Rust name. The
+ *  binding consults this map first so those calls reach the right function. */
+function wireNamesLiteral(manifest: Manifest): string {
+  const entries = manifest.functions
+    .filter((f) => camelToSnake(f.jsName) !== f.rustName)
+    .map((f) => `'${f.jsName}': '${f.rustName}'`);
+  return `{ ${entries.join(', ')} }`;
+}
+
 /** Render a single self-contained `.ts` (interface + class proxies + factory).
  *  One binding, faithful to native: `bind(provider)` returns an object whose
  *  sync fns/methods block for their value and whose `async` fns/methods resolve
@@ -142,8 +156,8 @@ export function generateTs(manifest: Manifest, name = 'Bindings'): string {
     : '{}';
   const factoryMap = factoryFns.length
     ? `{ ${factoryFns
-        .map((f) => `${f.jsName}: { cls: ${f.ret}, isAsync: ${f.isAsync} }`)
-        .join(', ')} } as unknown as Record<string, { cls: { __fromHandle(p: SyncProvider, h: unknown): unknown }; isAsync: boolean }>`
+        .map((f) => `${f.jsName}: { cls: ${f.ret}, isAsync: ${f.isAsync}, rustName: '${f.rustName}' }`)
+        .join(', ')} } as unknown as Record<string, { cls: { __fromHandle(p: SyncProvider, h: unknown): unknown }; isAsync: boolean; rustName: string }>`
     : '{}';
   return `// Generated from the Rust #[napi] manifest. Do not edit.
 import {
@@ -164,10 +178,11 @@ ${classDecls}
 
 const asyncFns: string[] = ${asyncFnsLiteral(manifest)};
 const externalFns: string[] = ${externalFnsLiteral(manifest)};
+const wireNames: Record<string, string> = ${wireNamesLiteral(manifest)};
 
 export const bind = (provider: SyncProvider): ${name} =>
   bindClasses(
-    createSyncBinding<${name}>(provider, asyncFns, externalFns),
+    createSyncBinding<${name}>(provider, asyncFns, externalFns, wireNames),
     provider,
     ${classMap},
     ${factoryMap}

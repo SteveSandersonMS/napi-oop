@@ -56,7 +56,7 @@ mod out_of_proc {
         let is_string_enum = attr_str.contains("string_enum");
         let parsed = parse_macro_input!(item as Item);
         match parsed {
-            Item::Fn(func) => expand_fn(func),
+            Item::Fn(func) => expand_fn(func, js_name_from_tokens(attr)),
             Item::Impl(imp) => expand_impl(imp),
             Item::Struct(s) if is_object => expand_object(s),
             // `#[napi(string_enum)]`: carried by serde as a string. Inject the
@@ -67,7 +67,50 @@ mod out_of_proc {
         }
     }
 
-    /// A `#[napi(object)]` struct: a plain value type carried by serde. Inject the
+    /// Extract a `js_name = "…"` value from the `#[napi(…)]` *macro argument*
+    /// tokens of a free function (e.g. `js_name = "fooBar"` in `#[napi(js_name =
+    /// "fooBar")]`). Other meta items (`ts_args_type = …`, bare flags) are
+    /// tolerated and ignored. Returns `None` when no `js_name` is present.
+    fn js_name_from_tokens(attr: TokenStream) -> Option<String> {
+        let mut found: Option<String> = None;
+        let parser = syn::meta::parser(|meta| {
+            if meta.path.is_ident("js_name") {
+                let value = meta.value()?;
+                let lit: syn::LitStr = value.parse()?;
+                found = Some(lit.value());
+            } else if meta.input.peek(syn::Token![=]) {
+                let value = meta.value()?;
+                let _: syn::Expr = value.parse()?;
+            }
+            Ok(())
+        });
+        let _ = syn::parse::Parser::parse(parser, attr);
+        found
+    }
+
+    /// Extract a `js_name = "…"` value from a method's inner `#[napi(…)]`
+    /// attribute(s). Mirrors [`js_name_from_tokens`] for the `impl` path, where
+    /// the attribute rides on the method rather than the macro invocation.
+    fn js_name_from_attrs(attrs: &[syn::Attribute]) -> Option<String> {
+        let mut found: Option<String> = None;
+        for attr in attrs {
+            if attr.path().is_ident("napi") {
+                let _ = attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("js_name") {
+                        let value = meta.value()?;
+                        let lit: syn::LitStr = value.parse()?;
+                        found = Some(lit.value());
+                    } else if meta.input.peek(syn::Token![=]) {
+                        let value = meta.value()?;
+                        let _: syn::Expr = value.parse()?;
+                    }
+                    Ok(())
+                });
+            }
+        }
+        found
+    }
+
     /// serde derives (camelCase fields, matching napi-rs's JS field naming) so the
     /// struct round-trips over the wire, and register its field shape so the TS
     /// generator emits a matching `interface` instead of `unknown`.
@@ -130,7 +173,9 @@ mod out_of_proc {
                 });
                 if let Some(rename) = js_name {
                     if !field_has_serde_rename {
-                        field.attrs.push(syn::parse_quote!(#[serde(rename = #rename)]));
+                        field
+                            .attrs
+                            .push(syn::parse_quote!(#[serde(rename = #rename)]));
                     }
                 }
             }
@@ -241,9 +286,10 @@ mod out_of_proc {
         }
     }
 
-    fn expand_fn(func: ItemFn) -> TokenStream {
+    fn expand_fn(func: ItemFn, js_name: Option<String>) -> TokenStream {
         let fn_name = func.sig.ident.clone();
         let fn_name_str = fn_name.to_string();
+        let js_name_str = js_name.unwrap_or_default();
 
         // Collect the (typed) argument types; methods aren't supported yet.
         let mut arg_types = Vec::new();
@@ -353,6 +399,7 @@ mod out_of_proc {
                 ::napi_oop::inventory::submit! {
                     ::napi_oop::registry::RegisteredFn {
                         name: #fn_name_str,
+                        js_name: #js_name_str,
                         dispatch: __napi_oop_dispatch,
                         params: &[#(#param_type_strs),*],
                         param_names: &[#(#arg_names),*],
@@ -434,6 +481,8 @@ mod out_of_proc {
         let m_ident = method.sig.ident.clone();
         let js_method = if is_ctor {
             "constructor".to_string()
+        } else if let Some(jn) = js_name_from_attrs(&method.attrs) {
+            jn
         } else {
             camel(&m_ident.to_string())
         };
@@ -539,7 +588,7 @@ mod out_of_proc {
                 fn #dispatch_ident(__args: ::std::vec::Vec<::napi_oop::rmpv::Value>, __cb: &::std::sync::Arc<dyn ::napi_oop::registry::Callbacks>) -> ::core::result::Result<::napi_oop::rmpv::Value, ::std::string::String> {
                     #body
                 }
-                ::napi_oop::inventory::submit! { ::napi_oop::registry::RegisteredFn { name: #wire_name, dispatch: #dispatch_ident, params: &[#(#param_strs),*], param_names: &[#(#arg_names),*], ret: #ret_label, is_async: #is_async } }
+                ::napi_oop::inventory::submit! { ::napi_oop::registry::RegisteredFn { name: #wire_name, js_name: "", dispatch: #dispatch_ident, params: &[#(#param_strs),*], param_names: &[#(#arg_names),*], ret: #ret_label, is_async: #is_async } }
                 ::napi_oop::inventory::submit! { ::napi_oop::registry::RegisteredMethod { class: #class, method: #js_method, rust_name: #wire_name, params: &[#(#param_strs),*], param_names: &[#(#arg_names),*], ret: #ret_label, is_async: #is_async, is_getter: #is_getter } }
             };
         }

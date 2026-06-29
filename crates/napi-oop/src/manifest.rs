@@ -193,7 +193,11 @@ pub fn manifest() -> Manifest {
         .into_iter()
         .filter(|f| !f.name.contains('.')) // class methods are grouped below
         .map(|f| FnSignature {
-            js_name: snake_to_camel(f.name),
+            js_name: if f.js_name.is_empty() {
+                snake_to_camel(f.name)
+            } else {
+                f.js_name.to_string()
+            },
             rust_name: f.name.to_string(),
             param_names: f.param_names.iter().map(|n| snake_to_camel(n)).collect(),
             params: f
