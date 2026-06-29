@@ -3,27 +3,16 @@
 //! serves, returning `5`.
 
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use napi_oop::bootstrap::{cleanup_socket_path, generate_socket_path};
 use napi_oop::codec::{read_message, write_message, Hello, Message, Request, Response, Role};
 use napi_oop::peer::handshake;
 use napi_oop::transport::{connect, listen};
 use napi_oop::PROTOCOL_VERSION;
 
-fn unique_socket_path() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir();
-    dir.join(format!("napi-oop-test-{}-{}.sock", std::process::id(), nanos))
-        .to_string_lossy()
-        .into_owned()
-}
-
 #[test]
 fn handshake_and_add_numbers_round_trip() {
-    let path = unique_socket_path();
+    let path = generate_socket_path();
     let listener = listen(&path).expect("listen");
 
     let provider_path = path.clone();
@@ -57,7 +46,7 @@ fn handshake_and_add_numbers_round_trip() {
         )
         .expect("write response");
 
-        let _ = std::fs::remove_file(&provider_path);
+        cleanup_socket_path(&provider_path);
     });
 
     let mut stream = connect(&path).expect("connect");

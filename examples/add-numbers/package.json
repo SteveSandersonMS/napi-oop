@@ -11,7 +11,7 @@
     "build": "npm run build:native && npm run build:types && npm run build:ts",
     "start": "npm run start:node-parent",
     "start:node-parent": "node dist/main.js",
-    "start:rust-parent": "../../target/release/add-numbers-provider node dist/main.js",
+    "start:rust-parent": "node rust-parent.mjs",
     "start:sync": "node dist/main-sync.js"
   },
   "dependencies": {
