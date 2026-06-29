@@ -6,12 +6,12 @@
 //! The path stays `napi::…`; only the runtime differs.
 
 #[cfg(feature = "out-of-proc")]
-pub use napi_oop_macro::napi;
-#[cfg(feature = "out-of-proc")]
 pub use napi_oop::{
     AsyncBlockBuilder, BigInt, Buffer, Env, Error, External, Object, Result, Status,
     ThreadsafeFunction, ThreadsafeFunctionCallMode, Utf16String,
 };
+#[cfg(feature = "out-of-proc")]
+pub use napi_oop_macro::napi;
 #[cfg(feature = "out-of-proc")]
 pub mod threadsafe_function {
     pub use napi_oop::{ThreadsafeFunction, ThreadsafeFunctionCallMode};

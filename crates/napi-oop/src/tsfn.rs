@@ -81,7 +81,10 @@ impl<T, R, C, S, const A: bool, const W: bool, const M: usize>
     /// `#[napi]` macro; not part of the user surface.
     #[doc(hidden)]
     pub fn __new(handle: HandleId, sink: Arc<dyn Callbacks>) -> Self {
-        Self { inner: CallbackHandle::new(handle, sink), _marker: PhantomData }
+        Self {
+            inner: CallbackHandle::new(handle, sink),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -101,6 +104,9 @@ impl<T, R, C, S, const A: bool, const W: bool, const M: usize> Clone
     for ThreadsafeFunction<T, R, C, S, A, W, M>
 {
     fn clone(&self) -> Self {
-        Self { inner: Arc::clone(&self.inner), _marker: PhantomData }
+        Self {
+            inner: Arc::clone(&self.inner),
+            _marker: PhantomData,
+        }
     }
 }

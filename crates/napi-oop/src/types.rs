@@ -81,7 +81,10 @@ impl BigInt {
 
 impl From<u64> for BigInt {
     fn from(word: u64) -> Self {
-        BigInt { sign_bit: false, words: vec![word] }
+        BigInt {
+            sign_bit: false,
+            words: vec![word],
+        }
     }
 }
 
@@ -139,7 +142,9 @@ impl<T: Send + Sync + 'static> External<T> {
         MINTED.with(|c| c.set(c.get() + 1));
         let value = Arc::new(value);
         let mut guard = EXTERNAL_SLAB.lock().unwrap();
-        guard.get_or_insert_with(HashMap::new).insert(token, Slot::Ext(value.clone()));
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(token, Slot::Ext(value.clone()));
         External { token, value }
     }
 
@@ -183,7 +188,11 @@ pub fn release_external(token: u64) {
 
 /// Number of live External entries — for tests asserting GC-driven release.
 pub fn external_slab_len() -> usize {
-    EXTERNAL_SLAB.lock().unwrap().as_ref().map_or(0, |m| m.len())
+    EXTERNAL_SLAB
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |m| m.len())
 }
 
 /// Register a provider-side object (a `#[napi]` class instance) in the slab,
@@ -192,7 +201,11 @@ pub fn external_slab_len() -> usize {
 pub fn object_new(value: Box<dyn std::any::Any + Send>) -> u64 {
     let token = EXTERNAL_NEXT.fetch_add(1, Ordering::Relaxed);
     MINTED.with(|c| c.set(c.get() + 1));
-    EXTERNAL_SLAB.lock().unwrap().get_or_insert_with(HashMap::new).insert(token, Slot::Class(value));
+    EXTERNAL_SLAB
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(token, Slot::Class(value));
     token
 }
 

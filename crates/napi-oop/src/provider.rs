@@ -48,7 +48,9 @@ pub fn serve(mut stream: Stream) -> io::Result<()> {
     handshake(&mut stream, provider_hello())?;
     let writer = std::sync::Arc::new(std::sync::Mutex::new(stream.try_clone()?));
     let callbacks: std::sync::Arc<dyn crate::registry::Callbacks> =
-        std::sync::Arc::new(ProviderCallbacks { writer: std::sync::Arc::clone(&writer) });
+        std::sync::Arc::new(ProviderCallbacks {
+            writer: std::sync::Arc::clone(&writer),
+        });
 
     // A small fixed pool reads requests off a channel, so threads are reused
     // across calls rather than spawned per request, and don't grow unboundedly.
@@ -93,7 +95,9 @@ pub fn serve(mut stream: Stream) -> io::Result<()> {
 
 /// Size of the request worker pool: available parallelism, min 1.
 fn worker_count() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
 }
 
 /// The [`Callbacks`] impl handed to each dispatched function: fire-and-forget,

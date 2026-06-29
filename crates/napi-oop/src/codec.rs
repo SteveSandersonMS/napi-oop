@@ -132,8 +132,8 @@ pub fn read_message<R: Read>(r: &mut R) -> io::Result<Option<Message>> {
     let len = u32::from_be_bytes(len_buf) as usize;
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
-    let message = rmp_serde::from_slice(&buf)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let message =
+        rmp_serde::from_slice(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     Ok(Some(message))
 }
 

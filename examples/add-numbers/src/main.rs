@@ -10,9 +10,9 @@
 
 use std::process::Command;
 
+use napi::napi;
 use napi_oop::bootstrap::SOCKET_ENV;
 use napi_oop::provider::{serve_from_env, spawn_and_serve};
-use napi::napi;
 
 /// Adds two numbers and returns the result.
 #[napi]
@@ -92,5 +92,7 @@ fn main() {
 }
 
 fn prog() -> String {
-    std::env::args().next().unwrap_or_else(|| "add-numbers-provider".into())
+    std::env::args()
+        .next()
+        .unwrap_or_else(|| "add-numbers-provider".into())
 }

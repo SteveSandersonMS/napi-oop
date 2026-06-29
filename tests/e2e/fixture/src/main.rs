@@ -53,7 +53,10 @@ pub fn double_big(n: napi::BigInt) -> napi::BigInt {
     // Exercise both `get_u64()` and the `words: Vec<u64>` struct-literal ctor,
     // matching how handle-token APIs build a BigInt.
     let (_sign, value, _lossless) = n.get_u64();
-    napi::BigInt { sign_bit: false, words: vec![value.wrapping_mul(2)] }
+    napi::BigInt {
+        sign_bit: false,
+        words: vec![value.wrapping_mul(2)],
+    }
 }
 
 /// A `#[napi(object)]` value struct: a plain by-value record crossing the
@@ -165,7 +168,9 @@ impl Counter {
     #[napi]
     pub async fn fork_slow(&self, by: i32) -> Counter {
         std::thread::sleep(std::time::Duration::from_millis(50));
-        Counter { value: self.value + by }
+        Counter {
+            value: self.value + by,
+        }
     }
 
     /// An async mutating method, returning the new value as a Promise.

@@ -49,7 +49,9 @@ impl std::error::Error for WireError {}
 pub fn to_wire<T: Serialize + ?Sized>(value: &T) -> Result<Value, WireError> {
     let mut buf = Vec::new();
     let mut ser = rmp_serde::Serializer::new(&mut buf).with_struct_map();
-    value.serialize(&mut ser).map_err(|e| WireError(e.to_string()))?;
+    value
+        .serialize(&mut ser)
+        .map_err(|e| WireError(e.to_string()))?;
     rmpv::decode::read_value(&mut &buf[..]).map_err(|e| WireError(e.to_string()))
 }
 
@@ -79,7 +81,10 @@ pub fn callback_handle(value: &Value) -> Result<u64, WireError> {
 
 /// Build the wire marker for an external/object handle: `{ "__napi_ext": <id> }`.
 pub fn external_marker(token: u64) -> Value {
-    Value::Map(vec![(Value::from(crate::types::EXTERNAL_KEY), Value::from(token))])
+    Value::Map(vec![(
+        Value::from(crate::types::EXTERNAL_KEY),
+        Value::from(token),
+    )])
 }
 
 /// Extract an external/object handle token from its wire marker.

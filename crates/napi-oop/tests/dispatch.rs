@@ -113,16 +113,21 @@ pub struct Wrapped {
 
 #[napi]
 pub fn nested_external(seed: i32) -> Wrapped {
-    Wrapped { inner: napi_oop::External::new(seed) }
+    Wrapped {
+        inner: napi_oop::External::new(seed),
+    }
 }
 
 fn call(function: &str, id: u64, args: Vec<Value>) -> Message {
     let cb: std::sync::Arc<dyn registry::Callbacks> = std::sync::Arc::new(registry::NoCallbacks);
-    registry::dispatch(Request {
-        id,
-        function: function.to_string(),
-        args,
-    }, &cb)
+    registry::dispatch(
+        Request {
+            id,
+            function: function.to_string(),
+            args,
+        },
+        &cb,
+    )
 }
 
 #[test]
@@ -182,7 +187,11 @@ fn arity_mismatch_is_an_error() {
 
 #[test]
 fn bad_argument_type_is_an_error() {
-    match call("add_numbers", 6, vec![Value::from("notnum"), Value::from(2i64)]) {
+    match call(
+        "add_numbers",
+        6,
+        vec![Value::from("notnum"), Value::from(2i64)],
+    ) {
         Message::Error(e) => assert_eq!(e.id, 6),
         other => panic!("expected error, got {other:?}"),
     }
@@ -201,7 +210,11 @@ fn panic_in_function_is_an_error_not_a_hang() {
 
 #[test]
 fn result_ok_unwraps_to_value() {
-    match call("checked_div", 9, vec![Value::from(10i64), Value::from(2i64)]) {
+    match call(
+        "checked_div",
+        9,
+        vec![Value::from(10i64), Value::from(2i64)],
+    ) {
         Message::Response(r) => assert_eq!(r.result.as_i64(), Some(5)),
         other => panic!("expected response, got {other:?}"),
     }
@@ -209,7 +222,11 @@ fn result_ok_unwraps_to_value() {
 
 #[test]
 fn result_err_is_an_error() {
-    match call("checked_div", 10, vec![Value::from(1i64), Value::from(0i64)]) {
+    match call(
+        "checked_div",
+        10,
+        vec![Value::from(1i64), Value::from(0i64)],
+    ) {
         Message::Error(e) => {
             assert_eq!(e.id, 10);
             assert_eq!(e.message, "divide by zero");
@@ -221,7 +238,11 @@ fn result_err_is_an_error() {
 #[test]
 fn result_return_type_unwraps_in_manifest() {
     let m = napi_oop::manifest::manifest();
-    let f = m.functions.iter().find(|f| f.rust_name == "checked_div").unwrap();
+    let f = m
+        .functions
+        .iter()
+        .find(|f| f.rust_name == "checked_div")
+        .unwrap();
     assert_eq!(f.ret, "number");
 }
 
@@ -236,12 +257,20 @@ fn dispatches_async_function_via_block_on() {
 #[test]
 fn manifest_flags_async_from_keyword_not_return_type() {
     let m = napi_oop::manifest::manifest();
-    let f = m.functions.iter().find(|f| f.rust_name == "slow_double").unwrap();
+    let f = m
+        .functions
+        .iter()
+        .find(|f| f.rust_name == "slow_double")
+        .unwrap();
     // Return type is the unwrapped `i32` -> `number`, but the fn is marked async
     // purely from the `async` keyword on its signature.
     assert!(f.is_async);
     assert_eq!(f.ret, "number");
-    let sync = m.functions.iter().find(|f| f.rust_name == "add_numbers").unwrap();
+    let sync = m
+        .functions
+        .iter()
+        .find(|f| f.rust_name == "add_numbers")
+        .unwrap();
     assert!(!sync.is_async);
 }
 
@@ -266,10 +295,18 @@ fn record(function: &str) -> (Message, std::sync::Arc<RecordingCallbacks>) {
         released: std::sync::Mutex::new(Vec::new()),
     });
     let dyn_cb: std::sync::Arc<dyn registry::Callbacks> = cb.clone();
-    let values = Value::Array(vec![Value::from(10i64), Value::from(20i64), Value::from(30i64)]);
+    let values = Value::Array(vec![
+        Value::from(10i64),
+        Value::from(20i64),
+        Value::from(30i64),
+    ]);
     let handle = Value::Map(vec![(Value::from("__napi_cb"), Value::from(7u64))]);
     let reply = registry::dispatch(
-        Request { id: 1, function: function.into(), args: vec![values, handle] },
+        Request {
+            id: 1,
+            function: function.into(),
+            args: vec![values, handle],
+        },
         &dyn_cb,
     );
     (reply, cb)
@@ -300,7 +337,11 @@ fn callback_handle_is_released_when_closure_drops() {
     // Both forms must release handle 7 once the Rust callback drops at call end.
     for name in ["sum_each", "sum_each_tsfn"] {
         let (_reply, cb) = record(name);
-        assert_eq!(*cb.released.lock().unwrap(), vec![7], "{name} should release");
+        assert_eq!(
+            *cb.released.lock().unwrap(),
+            vec![7],
+            "{name} should release"
+        );
     }
 }
 
@@ -309,7 +350,11 @@ fn callback_manifest_renders_ts_fn_type() {
     let m = napi_oop::manifest::manifest();
     for name in ["sum_each", "sum_each_tsfn"] {
         let f = m.functions.iter().find(|f| f.rust_name == name).unwrap();
-        assert_eq!(f.params, vec!["Array<number>", "(a0:number)=>void"], "{name}");
+        assert_eq!(
+            f.params,
+            vec!["Array<number>", "(a0:number)=>void"],
+            "{name}"
+        );
     }
 }
 
@@ -323,7 +368,11 @@ fn buffer_round_trips_through_dispatch() {
         other => panic!("expected response, got {other:?}"),
     }
     let m = napi_oop::manifest::manifest();
-    let f = m.functions.iter().find(|f| f.rust_name == "reverse_bytes").unwrap();
+    let f = m
+        .functions
+        .iter()
+        .find(|f| f.rust_name == "reverse_bytes")
+        .unwrap();
     assert_eq!(f.params, vec!["Uint8Array"]);
     assert_eq!(f.ret, "Uint8Array");
 }
@@ -333,12 +382,19 @@ fn bigint_round_trips_through_dispatch() {
     let big = Value::from(21u64);
     match call("double_handle", 21, vec![big]) {
         Message::Response(r) => {
-            assert_eq!(from_wire::<napi_oop::BigInt>(r.result).unwrap().get_u64().1, 42);
+            assert_eq!(
+                from_wire::<napi_oop::BigInt>(r.result).unwrap().get_u64().1,
+                42
+            );
         }
         other => panic!("expected response, got {other:?}"),
     }
     let m = napi_oop::manifest::manifest();
-    let f = m.functions.iter().find(|f| f.rust_name == "double_handle").unwrap();
+    let f = m
+        .functions
+        .iter()
+        .find(|f| f.rust_name == "double_handle")
+        .unwrap();
     assert_eq!(f.ret, "bigint");
 }
 
@@ -354,7 +410,11 @@ fn external_round_trips_via_token_through_dispatch() {
         other => panic!("expected response, got {other:?}"),
     }
     let m = napi_oop::manifest::manifest();
-    let f = m.functions.iter().find(|f| f.rust_name == "read_external").unwrap();
+    let f = m
+        .functions
+        .iter()
+        .find(|f| f.rust_name == "read_external")
+        .unwrap();
     assert_eq!(f.params, vec!["ExternalObject"]);
 }
 
@@ -397,14 +457,24 @@ pub fn blob_size(b: &napi_oop::External<Blob>) -> i32 {
 #[test]
 fn napi_object_round_trips_with_camel_case_fields() {
     // Outbound: returned object is a MessagePack map with camelCase keys.
-    let result = match call("make_vec2", 30, vec![Value::from(2i64), Value::from(3i64), Value::from("p")]) {
+    let result = match call(
+        "make_vec2",
+        30,
+        vec![Value::from(2i64), Value::from(3i64), Value::from("p")],
+    ) {
         Message::Response(r) => r.result,
         other => panic!("expected response, got {other:?}"),
     };
     let map = result.as_map().expect("object is a map");
     let keys: Vec<&str> = map.iter().filter_map(|(k, _)| k.as_str()).collect();
-    assert!(keys.contains(&"labelText"), "expected camelCase key, got {keys:?}");
-    assert!(!keys.contains(&"label_text"), "snake_case key leaked: {keys:?}");
+    assert!(
+        keys.contains(&"labelText"),
+        "expected camelCase key, got {keys:?}"
+    );
+    assert!(
+        !keys.contains(&"label_text"),
+        "snake_case key leaked: {keys:?}"
+    );
 
     // Inbound: an object arg with camelCase keys decodes back into the struct.
     match call("vec2_label", 31, vec![result]) {
@@ -414,12 +484,24 @@ fn napi_object_round_trips_with_camel_case_fields() {
 
     // Manifest: the object is a named interface; fns referencing it keep the name.
     let m = napi_oop::manifest::manifest();
-    let obj = m.objects.iter().find(|o| o.name == "Vec2").expect("Vec2 registered");
+    let obj = m
+        .objects
+        .iter()
+        .find(|o| o.name == "Vec2")
+        .expect("Vec2 registered");
     assert_eq!(obj.field_names, vec!["x", "y", "labelText"]);
     assert_eq!(obj.field_types, vec!["number", "number", "string"]);
-    let f = m.functions.iter().find(|f| f.rust_name == "make_vec2").unwrap();
+    let f = m
+        .functions
+        .iter()
+        .find(|f| f.rust_name == "make_vec2")
+        .unwrap();
     assert_eq!(f.ret, "Vec2");
-    let g = m.functions.iter().find(|f| f.rust_name == "vec2_label").unwrap();
+    let g = m
+        .functions
+        .iter()
+        .find(|f| f.rust_name == "vec2_label")
+        .unwrap();
     assert_eq!(g.params, vec!["Vec2"]);
 }
 
@@ -436,6 +518,10 @@ fn external_ref_param_derefs_to_inner() {
         other => panic!("expected response, got {other:?}"),
     }
     let m = napi_oop::manifest::manifest();
-    let f = m.functions.iter().find(|f| f.rust_name == "blob_size").unwrap();
+    let f = m
+        .functions
+        .iter()
+        .find(|f| f.rust_name == "blob_size")
+        .unwrap();
     assert_eq!(f.params, vec!["ExternalObject"]);
 }

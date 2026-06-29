@@ -87,7 +87,10 @@ pub fn rust_to_ts(rust: &str) -> String {
 pub fn rust_to_ts_with(rust: &str, known: &std::collections::HashSet<String>) -> String {
     // A by-reference param (`&External<T>`, `&str`) maps identically to its
     // owned form on the wire, so drop a leading `&` (and `mut`) before mapping.
-    let rust = rust.trim_start_matches('&').trim_start_matches("mut ").trim();
+    let rust = rust
+        .trim_start_matches('&')
+        .trim_start_matches("mut ")
+        .trim();
     // Normalize away module paths on the outer type (`napi::Buffer` -> `Buffer`,
     // `napi_oop::External<i32>` -> `External<i32>`) so `#[napi]` source compiles
     // regardless of how the type was imported.
@@ -173,8 +176,10 @@ fn snake_to_camel(name: &str) -> String {
 
 /// Build the manifest from all registered `#[napi]` functions.
 pub fn manifest() -> Manifest {
-    let class_names: std::collections::HashSet<&str> =
-        inventory::iter::<RegisteredMethod>.into_iter().map(|m| m.class).collect();
+    let class_names: std::collections::HashSet<&str> = inventory::iter::<RegisteredMethod>
+        .into_iter()
+        .map(|m| m.class)
+        .collect();
     // Names that map to a TS type verbatim (class proxies + object interfaces),
     // so they survive param/return/container mapping instead of becoming `unknown`.
     let mut known: std::collections::HashSet<String> =
@@ -189,7 +194,11 @@ pub fn manifest() -> Manifest {
             js_name: snake_to_camel(f.name),
             rust_name: f.name.to_string(),
             param_names: f.param_names.iter().map(|n| snake_to_camel(n)).collect(),
-            params: f.params.iter().map(|t| rust_to_ts_with(t, &known)).collect(),
+            params: f
+                .params
+                .iter()
+                .map(|t| rust_to_ts_with(t, &known))
+                .collect(),
             ret: rust_to_ts_with(f.ret, &known),
             is_async: f.is_async,
         })
@@ -200,14 +209,21 @@ pub fn manifest() -> Manifest {
             js_name: m.method.to_string(),
             rust_name: m.rust_name.to_string(),
             param_names: m.param_names.iter().map(|n| snake_to_camel(n)).collect(),
-            params: m.params.iter().map(|t| rust_to_ts_with(t, &known)).collect(),
+            params: m
+                .params
+                .iter()
+                .map(|t| rust_to_ts_with(t, &known))
+                .collect(),
             ret: rust_to_ts_with(m.ret, &known),
             is_async: m.is_async,
             is_getter: m.is_getter,
         };
         match classes.iter_mut().find(|c| c.name == m.class) {
             Some(c) => c.methods.push(method),
-            None => classes.push(ClassSignature { name: m.class.to_string(), methods: vec![method] }),
+            None => classes.push(ClassSignature {
+                name: m.class.to_string(),
+                methods: vec![method],
+            }),
         }
     }
     let objects = inventory::iter::<RegisteredObject>
@@ -215,10 +231,18 @@ pub fn manifest() -> Manifest {
         .map(|o| ObjectSignature {
             name: o.name.to_string(),
             field_names: o.field_names.iter().map(|n| snake_to_camel(n)).collect(),
-            field_types: o.field_types.iter().map(|t| rust_to_ts_with(t, &known)).collect(),
+            field_types: o
+                .field_types
+                .iter()
+                .map(|t| rust_to_ts_with(t, &known))
+                .collect(),
         })
         .collect();
-    Manifest { functions, classes, objects }
+    Manifest {
+        functions,
+        classes,
+        objects,
+    }
 }
 
 /// Serialize the manifest to pretty JSON for the TS generator to consume.

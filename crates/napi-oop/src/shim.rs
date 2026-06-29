@@ -71,12 +71,18 @@ impl Error {
     /// Build an error from a human-readable reason, defaulting the status to
     /// `GenericFailure` — the common napi-rs constructor.
     pub fn from_reason<T: Into<String>>(reason: T) -> Self {
-        Error { status: Status::GenericFailure, reason: reason.into() }
+        Error {
+            status: Status::GenericFailure,
+            reason: reason.into(),
+        }
     }
 
     /// Build an error with an explicit status and reason.
     pub fn new<T: Into<String>>(status: Status, reason: T) -> Self {
-        Error { status, reason: reason.into() }
+        Error {
+            status,
+            reason: reason.into(),
+        }
     }
 }
 
@@ -125,7 +131,10 @@ pub struct Object<'env> {
 impl<'env> Object<'env> {
     /// Create an empty object. The `Env` is accepted for source compatibility.
     pub fn new(_env: &'env Env) -> Result<Self> {
-        Ok(Object { entries: Vec::new(), _env: std::marker::PhantomData })
+        Ok(Object {
+            entries: Vec::new(),
+            _env: std::marker::PhantomData,
+        })
     }
 
     /// Set a property to any serializable value (last write wins per key).
