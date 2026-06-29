@@ -228,15 +228,18 @@ pub struct AsyncBlockBuilder<F> {
     future: F,
 }
 
-impl<F: std::future::Future> AsyncBlockBuilder<F> {
+impl<T, F: std::future::Future<Output = Result<T>>> AsyncBlockBuilder<F> {
     pub fn new(future: F) -> Self {
         AsyncBlockBuilder { future }
     }
 
-    /// Run the wrapped future to completion. The `Env` is accepted for source
-    /// compatibility with napi-rs's `build(env)`.
-    pub fn build(self, _env: &Env) -> Result<F::Output> {
-        Ok(crate::block_on(self.future))
+    /// Run the wrapped future to completion, yielding its `Result<T>`. The `Env`
+    /// is accepted for source compatibility with napi-rs's `build(env)`.
+    /// Constraining the future's `Output` to `Result<T, Error>` (rather than an
+    /// open type) lets the `?`/`Ok(..)` inside a hand-written async block infer
+    /// their error type, exactly as napi-rs's builder does.
+    pub fn build(self, _env: &Env) -> Result<T> {
+        crate::block_on(self.future)
     }
 }
 
