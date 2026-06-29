@@ -107,6 +107,13 @@ void init().then(
       asyncPort.postMessage({ cbRelease: true, handle });
     };
 
+    // When the provider connection drops, tell the main thread so it releases
+    // every callback keep-alive ref — a dead provider can never fire those
+    // callbacks again, so they must not hold the caller's event loop open.
+    peer.onDisconnect = (): void => {
+      asyncPort.postMessage({ providerClosed: true });
+    };
+
     const installCallbacks = (callArgs: unknown[]): void => {
       for (const a of callArgs) {
         const handle = callbackHandle(a);

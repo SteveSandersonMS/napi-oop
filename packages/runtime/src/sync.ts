@@ -70,6 +70,9 @@ interface CallbackRelease {
   cbRelease: true;
   handle: number;
 }
+interface ProviderClosed {
+  providerClosed: true;
+}
 
 function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOptions): SyncProvider {
   // [1] signal: 0 = waiting, 1 = result ready. The worker bumps + notifies.
@@ -87,6 +90,7 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
   worker.unref();
 
   let closed = false;
+  let workerTerminated = false;
   // Main-thread callback registry: handle -> JS function. The worker only ever
   // sees the handle and forwards invocations back here to fire.
   const callbacks = new Map<number, Callback>();
@@ -124,9 +128,30 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
     }
   };
 
+  // The provider connection has gone away. Release all callback keep-alive refs
+  // (a dead provider can't fire them), fail outstanding async calls, and mark
+  // the handle closed so further calls throw rather than block forever.
+  const onProviderGone = (): void => {
+    if (closed) return;
+    closed = true;
+    callbacks.clear();
+    refCount = 0;
+    asyncMain.unref();
+    for (const p of pending.values()) p.reject(new Error('provider is closed'));
+    pending.clear();
+  };
+
   // Event-loop delivery of async results and callbacks. Fires whenever the main
   // thread is free; while a sync call blocks, these queue and run after it.
-  asyncMain.on('message', (msg: AsyncResult | CallbackInvoke | CallbackRelease) => {
+  asyncMain.on('message', (msg: AsyncResult | CallbackInvoke | CallbackRelease | ProviderClosed) => {
+    if ('providerClosed' in msg) {
+      // The provider connection dropped (e.g. it crashed or was signalled). Its
+      // held callbacks can never fire again, so release every keep-alive ref and
+      // let the event loop drain. Pending async calls are failed; further calls
+      // throw `provider is closed`.
+      onProviderGone();
+      return;
+    }
     if ('cbRelease' in msg) {
       // The provider dropped this callback; drop our entry and release the
       // keep-alive ref taken when it was sent. Guard on delete so a stray or
@@ -214,15 +239,16 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
       if (token !== undefined) externals.register(value as object, token);
     },
     close() {
-      if (closed) return;
+      // Release keep-alive refs and fail outstanding work. Idempotent with
+      // onProviderGone(), which may have already run if the provider died.
       closed = true;
-      // Drop any callback keep-alive refs so the async port can't hold the
-      // process open past shutdown.
       callbacks.clear();
       refCount = 0;
       asyncMain.unref();
       for (const p of pending.values()) p.reject(new Error('provider is closed'));
       pending.clear();
+      if (workerTerminated) return;
+      workerTerminated = true;
       port1.postMessage({ close: true });
       // Wait for the worker to finish provider shutdown + socket cleanup before
       // terminating it, so no socket files are leaked.

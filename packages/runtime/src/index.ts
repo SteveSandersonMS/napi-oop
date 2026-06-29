@@ -116,8 +116,17 @@ export function launchProvider(options: LaunchOptions): Promise<Provider> {
     server.on('error', reject);
 
     server.listen(socketPath, () => {
+      // Spawn the provider in its own process group (`detached`). On a console
+      // Ctrl+C the terminal delivers SIGINT/CTRL_C_EVENT only to the foreground
+      // group; an isolated provider does not receive it and stays alive while the
+      // Node parent runs its graceful shutdown — so native calls made during
+      // shutdown (logging, secret filtering, server teardown) still succeed,
+      // matching in-process behaviour where native code never disappears. The
+      // provider exits on its own once the parent's socket closes (EOF). stdio is
+      // still inherited, so it shares the parent console with no extra window.
       const child = spawn(options.command, options.args ?? [], {
         stdio: 'inherit',
+        detached: true,
         env: { ...process.env, [SOCKET_ENV]: socketPath },
       });
       child.on('error', reject);

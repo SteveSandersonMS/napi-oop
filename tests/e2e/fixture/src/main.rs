@@ -78,6 +78,15 @@ pub fn release_callback() {
     *HELD_CALLBACK.lock().unwrap() = None;
 }
 
+/// Abruptly terminate the provider mid-dispatch, simulating a crash or a signal
+/// killing it (e.g. Ctrl+C reaching the child). The caller's in-flight call must
+/// reject rather than block forever, and any callback the provider was holding
+/// must stop keeping the caller's event loop alive.
+#[napi]
+pub fn exit_provider() {
+    std::process::exit(0);
+}
+
 #[napi]
 pub fn reverse_bytes(b: napi::Buffer) -> napi::Buffer {
     let mut v = b.to_vec();

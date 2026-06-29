@@ -38,6 +38,12 @@ export class Peer {
    * `ThreadsafeFunction` is ref'd by default until dropped.
    */
   onCallbackReleased?: (handle: number) => void;
+  /**
+   * Notified once when the underlying socket closes or errors. The worker-backed
+   * `SyncProvider` uses this to release any callback keep-alive refs so a dead
+   * provider can't hold the caller's event loop open forever.
+   */
+  onDisconnect?: () => void;
   /** Releases provider-side External slab entries when the JS handle is GC'd. */
   private readonly externals = new FinalizationRegistry<number>((token) => {
     if (!this.closed) this.socket.write(encodeFrame({ type: 'releaseExternal', token }));
@@ -63,8 +69,23 @@ export class Peer {
   ) {
     const decode = createFrameDecoder((msg) => this.onMessage(msg as Message));
     socket.on('data', decode);
-    socket.on('close', () => this.failAll(new Error('peer connection closed')));
-    socket.on('error', (err) => this.failAll(err));
+    socket.on('close', () => this.handleDisconnect(new Error('peer connection closed')));
+    socket.on('error', (err) => this.handleDisconnect(err));
+  }
+
+  /**
+   * Handle the socket closing or erroring. Marks the peer closed *before*
+   * failing in-flight calls so any subsequent `call()` rejects immediately
+   * rather than writing to a dead socket and never resolving — which, on the
+   * synchronous (worker-backed) path, would park the caller's main thread in
+   * `Atomics.wait` forever. Fires `onDisconnect` once so keep-alive refs are
+   * released.
+   */
+  private handleDisconnect(error: Error): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.failAll(error);
+    this.onDisconnect?.();
   }
 
   /**

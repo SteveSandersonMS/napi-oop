@@ -53,3 +53,24 @@ test('releasing the held callback lets the process exit', async () => {
   assert.match(out(), /READY release/, out());
   assert.equal(code, 0, `expected a clean exit after releasing the callback; output:\n${out()}`);
 });
+
+test('a crashed provider does not hang the caller and releases keep-alive', async () => {
+  const { child, out } = spawnDriver('crash');
+  const code = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`process hung after the provider crashed; output:\n${out()}`));
+    }, 8000);
+    child.on('exit', (c) => {
+      clearTimeout(timer);
+      resolve(c);
+    });
+    child.on('error', reject);
+  });
+
+  // The in-flight call rejected rather than parking the main thread forever...
+  assert.match(out(), /CALL_REJECTED/, out());
+  // ...and the process exited despite holding a callback (keep-alive released).
+  assert.match(out(), /READY crash/, out());
+  assert.equal(code, 0, `expected a clean exit after the provider crashed; output:\n${out()}`);
+});

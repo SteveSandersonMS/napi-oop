@@ -18,13 +18,23 @@ function providerCommand(): string {
   return join(__dirname, '..', '..', '..', 'target', 'release', 'e2e-provider');
 }
 
-const mode = process.argv[2]; // 'hold' | 'release'
+const mode = process.argv[2]; // 'hold' | 'release' | 'crash'
 
 const provider = launchProviderSync({ command: providerCommand() });
 const native: Fixture = bind(provider);
 
 native.holdCallback(() => {});
 if (mode === 'release') native.releaseCallback();
+if (mode === 'crash') {
+  try {
+    // The provider exits mid-dispatch. This call must reject (not hang the main
+    // thread on `Atomics.wait`), and the disconnect must release the keep-alive
+    // ref the held callback took, so the process can exit despite holding it.
+    native.exitProvider();
+  } catch (err) {
+    console.log('CALL_REJECTED ' + (err instanceof Error ? err.message : String(err)));
+  }
+}
 
 // Deliberately do not close the provider and do not register any timer, socket,
 // or listener. The only thing that can hold the loop open is the live callback.
