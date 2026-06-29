@@ -32,7 +32,16 @@ pub struct NamedSocketListener {
 impl NamedSocketListener {
     /// Block until a peer connects, returning the connected stream.
     pub fn accept(&self) -> io::Result<Stream> {
-        self.inner.accept()
+        let stream = self.inner.accept()?;
+        // On BSD/macOS an accepted socket inherits the listener's non-blocking
+        // flag, and `interprocess` only ever *enables* non-blocking on accepted
+        // streams, never disables it (see its `accept` TODO). When we put the
+        // listener in non-blocking accept mode to poll for a connection, that
+        // flag would otherwise leak onto the connection and make the serve loop's
+        // blocking reads fail with `WouldBlock`/`EAGAIN`. Force the stream back to
+        // blocking; a no-op where it already is (Linux/Windows).
+        stream.set_nonblocking(false)?;
+        Ok(stream)
     }
 
     /// Toggle non-blocking `accept`: when enabled, [`accept`](Self::accept)
