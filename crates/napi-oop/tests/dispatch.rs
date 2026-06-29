@@ -43,6 +43,17 @@ pub fn boom(_n: i32) -> i32 {
     panic!("kaboom");
 }
 
+/// Returns `Result`: Ok unwraps to a value, Err maps to an error reply (a thrown
+/// JS exception out-of-process), mirroring napi-rs.
+#[napi]
+pub fn checked_div(a: i32, b: i32) -> Result<i32, String> {
+    if b == 0 {
+        Err("divide by zero".to_string())
+    } else {
+        Ok(a / b)
+    }
+}
+
 /// A callback param: the macro decodes a handle marker and builds a closure that
 /// fires through the `Callbacks` table. Sums values, notifying each step.
 #[napi]
@@ -148,6 +159,32 @@ fn panic_in_function_is_an_error_not_a_hang() {
         }
         other => panic!("expected error, got {other:?}"),
     }
+}
+
+#[test]
+fn result_ok_unwraps_to_value() {
+    match call("checked_div", 9, vec![Value::from(10i64), Value::from(2i64)]) {
+        Message::Response(r) => assert_eq!(r.result.as_i64(), Some(5)),
+        other => panic!("expected response, got {other:?}"),
+    }
+}
+
+#[test]
+fn result_err_is_an_error() {
+    match call("checked_div", 10, vec![Value::from(1i64), Value::from(0i64)]) {
+        Message::Error(e) => {
+            assert_eq!(e.id, 10);
+            assert_eq!(e.message, "divide by zero");
+        }
+        other => panic!("expected error, got {other:?}"),
+    }
+}
+
+#[test]
+fn result_return_type_unwraps_in_manifest() {
+    let m = napi_oop::manifest::manifest();
+    let f = m.functions.iter().find(|f| f.rust_name == "checked_div").unwrap();
+    assert_eq!(f.ret, "number");
 }
 
 #[test]

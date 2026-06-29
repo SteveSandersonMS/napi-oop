@@ -125,9 +125,13 @@ mod out_of_proc {
                 }
             })
             .collect();
-        let ret_type_str: String = match &func.sig.output {
-            syn::ReturnType::Default => "()".to_string(),
-            syn::ReturnType::Type(_, ty) => quote!(#ty).to_string().split_whitespace().collect(),
+        let ret_ok_type = result_ok_type(&func.sig.output);
+        let ret_type_str: String = match (&ret_ok_type, &func.sig.output) {
+            (Some(ok), _) => quote!(#ok).to_string().split_whitespace().collect(),
+            (None, syn::ReturnType::Type(_, ty)) => {
+                quote!(#ty).to_string().split_whitespace().collect()
+            }
+            (None, syn::ReturnType::Default) => "()".to_string(),
         };
 
         // Async Rust fns surface as async on TS in *both* binding modes. The
@@ -138,6 +142,25 @@ mod out_of_proc {
             quote! { ::napi_oop::block_on(#fn_name(#(#arg_idents),*)) }
         } else {
             quote! { #fn_name(#(#arg_idents),*) }
+        };
+
+        // A `Result<T, E>` Err maps to an error reply (mirroring napi-rs's throw);
+        // a plain return is always success. The Ok value / plain value is encoded.
+        let encode_ret = if ret_ok_type.is_some() {
+            quote! {
+                match __ret {
+                    ::core::result::Result::Ok(__v) => ::napi_oop::wire::to_wire(&__v)
+                        .map_err(|e| ::std::string::ToString::to_string(&e)),
+                    ::core::result::Result::Err(__e) => {
+                        ::core::result::Result::Err(::std::string::ToString::to_string(&__e))
+                    }
+                }
+            }
+        } else {
+            quote! {
+                ::napi_oop::wire::to_wire(&__ret)
+                    .map_err(|e| ::std::string::ToString::to_string(&e))
+            }
         };
 
         let expanded = quote! {
@@ -159,8 +182,7 @@ mod out_of_proc {
                     let mut __iter = __args.into_iter();
                     #(#decode_args)*
                     let __ret = #call_expr;
-                    ::napi_oop::wire::to_wire(&__ret)
-                        .map_err(|e| ::std::string::ToString::to_string(&e))
+                    #encode_ret
                 }
 
                 ::napi_oop::inventory::submit! {
@@ -221,6 +243,29 @@ mod out_of_proc {
                 if let syn::GenericArgument::Type(t) = arg {
                     return Some(t.clone());
                 }
+            }
+        }
+        None
+    }
+
+    /// If the return type is `Result<T, _>` (any path ending in `Result`), return
+    /// the `T`. The Err arm maps to an error reply; the manifest types `T`.
+    fn result_ok_type(output: &syn::ReturnType) -> Option<syn::Type> {
+        let ty = match output {
+            syn::ReturnType::Type(_, ty) => ty,
+            syn::ReturnType::Default => return None,
+        };
+        let path = match &**ty {
+            syn::Type::Path(p) => &p.path,
+            _ => return None,
+        };
+        let seg = path.segments.last()?;
+        if seg.ident != "Result" {
+            return None;
+        }
+        if let syn::PathArguments::AngleBracketed(a) = &seg.arguments {
+            if let Some(syn::GenericArgument::Type(t)) = a.args.first() {
+                return Some(t.clone());
             }
         }
         None
