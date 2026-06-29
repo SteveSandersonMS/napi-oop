@@ -30,6 +30,14 @@ export class Peer {
   private readonly callbacks = new Map<number, Callback>();
   private nextHandle = 1;
   private closed = false;
+  /**
+   * Notified when the provider releases a callback handle (its last
+   * `ThreadsafeFunction` clone dropped). The worker-backed `SyncProvider` uses
+   * this to forward the release to the main thread, which keeps the process
+   * event loop alive while a callback is live — mirroring how an in-process
+   * `ThreadsafeFunction` is ref'd by default until dropped.
+   */
+  onCallbackReleased?: (handle: number) => void;
   /** Releases provider-side External slab entries when the JS handle is GC'd. */
   private readonly externals = new FinalizationRegistry<number>((token) => {
     if (!this.closed) this.socket.write(encodeFrame({ type: 'releaseExternal', token }));
@@ -143,6 +151,7 @@ export class Peer {
     }
     if (msg.type === 'release') {
       this.callbacks.delete(msg.handle);
+      this.onCallbackReleased?.(msg.handle);
       return;
     }
     if (msg.type !== 'response' && msg.type !== 'error') return;

@@ -100,6 +100,13 @@ void init().then(
       });
     };
 
+    // When the provider drops a callback (its last `ThreadsafeFunction` clone
+    // released), tell the main thread so it can drop its registry entry and
+    // release the event-loop keep-alive ref it took when the callback was sent.
+    peer.onCallbackReleased = (handle: number): void => {
+      asyncPort.postMessage({ cbRelease: true, handle });
+    };
+
     const installCallbacks = (callArgs: unknown[]): void => {
       for (const a of callArgs) {
         const handle = callbackHandle(a);

@@ -58,6 +58,26 @@ pub fn sum_each_tsfn(values: Vec<i32>, on_step: napi::ThreadsafeFunction<i32>) -
     total
 }
 
+/// A callback the provider stores past the call, like a server's long-lived
+/// accept callback. While the provider holds it, the caller's process must stay
+/// alive — the live callback keeps the event loop ref'd, mirroring how an
+/// in-process `ThreadsafeFunction` is ref'd by default until dropped.
+static HELD_CALLBACK: std::sync::Mutex<Option<napi::ThreadsafeFunction<i32>>> =
+    std::sync::Mutex::new(None);
+
+/// Store the callback provider-side so it outlives the call.
+#[napi]
+pub fn hold_callback(cb: napi::ThreadsafeFunction<i32>) {
+    *HELD_CALLBACK.lock().unwrap() = Some(cb);
+}
+
+/// Drop the held callback. Its `Drop` sends a `release` over the wire, letting
+/// the caller's event loop drain so the process can exit on its own.
+#[napi]
+pub fn release_callback() {
+    *HELD_CALLBACK.lock().unwrap() = None;
+}
+
 #[napi]
 pub fn reverse_bytes(b: napi::Buffer) -> napi::Buffer {
     let mut v = b.to_vec();

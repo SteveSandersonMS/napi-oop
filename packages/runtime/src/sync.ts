@@ -66,6 +66,10 @@ interface CallbackInvoke {
   handle: number;
   args: unknown[];
 }
+interface CallbackRelease {
+  cbRelease: true;
+  handle: number;
+}
 
 function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOptions): SyncProvider {
   // [1] signal: 0 = waiting, 1 = result ready. The worker bumps + notifies.
@@ -88,9 +92,11 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
   const callbacks = new Map<number, Callback>();
   let nextHandle = 1;
 
-  // Pending non-blocking `async` calls, keyed by id. The async port is kept
-  // ref'd only while calls are outstanding, so it never blocks process exit on
-  // its own (matching the worker's `unref`).
+  // Pending non-blocking `async` calls, keyed by id. The async port is ref'd
+  // while calls are outstanding *or* while a callback the provider still holds is
+  // live, so a long-running provider activity (e.g. a server's accept callback)
+  // keeps the process alive — matching how an in-process `ThreadsafeFunction` is
+  // ref'd by default — while a process with no outstanding work still exits.
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   let nextCallId = 1;
   let refCount = 0;
@@ -120,7 +126,14 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
 
   // Event-loop delivery of async results and callbacks. Fires whenever the main
   // thread is free; while a sync call blocks, these queue and run after it.
-  asyncMain.on('message', (msg: AsyncResult | CallbackInvoke) => {
+  asyncMain.on('message', (msg: AsyncResult | CallbackInvoke | CallbackRelease) => {
+    if ('cbRelease' in msg) {
+      // The provider dropped this callback; drop our entry and release the
+      // keep-alive ref taken when it was sent. Guard on delete so a stray or
+      // duplicate release can't unbalance the ref count.
+      if (callbacks.delete(msg.handle)) unrefAsync();
+      return;
+    }
     if ('cb' in msg) {
       dispatchCallback(msg.handle, msg.args);
       return;
@@ -160,11 +173,15 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
   };
 
   // Replace function args with {__napi_cb} markers, keeping the function local.
+  // Each registered callback takes an event-loop keep-alive ref (released when
+  // the provider drops the callback), so a stored callback holds the process
+  // open like an in-process `ThreadsafeFunction` would.
   const encodeArgs = (args: unknown[]): unknown[] =>
     args.map((a) => {
       if (typeof a !== 'function') return a;
       const handle = nextHandle++;
       callbacks.set(handle, a as Callback);
+      refAsync();
       return { __napi_cb: handle };
     });
 
@@ -199,6 +216,11 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
     close() {
       if (closed) return;
       closed = true;
+      // Drop any callback keep-alive refs so the async port can't hold the
+      // process open past shutdown.
+      callbacks.clear();
+      refCount = 0;
+      asyncMain.unref();
       for (const p of pending.values()) p.reject(new Error('provider is closed'));
       pending.clear();
       port1.postMessage({ close: true });
