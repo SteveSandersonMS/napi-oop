@@ -153,10 +153,38 @@ pub fn serve_from_env() -> io::Result<()> {
 pub fn spawn_and_serve(mut command: Command) -> io::Result<()> {
     let path = generate_socket_path();
     let listener = listen(&path)?;
+    // Don't park forever waiting to be connected to. If the child exits before it
+    // connects — a startup crash, or a fast path that never loads the runtime —
+    // we must notice and stop instead of blocking in `accept` indefinitely.
+    listener.set_nonblocking_accept(true)?;
     command.env(SOCKET_ENV, &path);
 
     let mut child = command.spawn()?;
-    let result = serve(listener.accept()?);
+
+    let stream = loop {
+        match listener.accept() {
+            Ok(stream) => break Some(stream),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                // No peer pending. If the child has already exited, make one last
+                // attempt (it may have connected right before exiting) and then
+                // give up rather than waiting for a connection that won't come.
+                if child.try_wait()?.is_some() {
+                    break listener.accept().ok();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => {
+                let _ = child.wait();
+                cleanup_socket_path(&path);
+                return Err(e);
+            }
+        }
+    };
+
+    let result = match stream {
+        Some(stream) => serve(stream),
+        None => Ok(()),
+    };
 
     let _ = child.wait();
     cleanup_socket_path(&path);

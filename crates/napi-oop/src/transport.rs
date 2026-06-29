@@ -11,7 +11,9 @@
 use std::io::{self, Read, Write};
 
 use interprocess::local_socket::prelude::*;
-use interprocess::local_socket::{GenericFilePath, Listener, ListenerOptions, Stream};
+use interprocess::local_socket::{
+    GenericFilePath, Listener, ListenerNonblockingMode, ListenerOptions, Stream,
+};
 
 /// A bidirectional, ordered byte stream connecting the Node and Rust peers.
 ///
@@ -31,6 +33,20 @@ impl NamedSocketListener {
     /// Block until a peer connects, returning the connected stream.
     pub fn accept(&self) -> io::Result<Stream> {
         self.inner.accept()
+    }
+
+    /// Toggle non-blocking `accept`: when enabled, [`accept`](Self::accept)
+    /// returns a [`WouldBlock`](io::ErrorKind::WouldBlock) error instead of
+    /// parking when no peer is currently connecting. Accepted streams stay
+    /// blocking. Used to poll for a connection while also watching for a child
+    /// that may exit before it connects.
+    pub fn set_nonblocking_accept(&self, nonblocking: bool) -> io::Result<()> {
+        let mode = if nonblocking {
+            ListenerNonblockingMode::Accept
+        } else {
+            ListenerNonblockingMode::Neither
+        };
+        self.inner.set_nonblocking(mode)
     }
 }
 
