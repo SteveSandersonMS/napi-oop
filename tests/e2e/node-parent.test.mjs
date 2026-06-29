@@ -15,6 +15,7 @@ test('node-parent: every flow over the real socket boundary', async () => {
   assert.equal(r.add, 5);
   assert.deepEqual(r.multiply, [42, 72]);
   assert.ok(r.concurrentMs < 350, `expected concurrent (<350ms), got ${r.concurrentMs}ms`);
+  assert.equal(r.timerFiredDuringCall, true, 'event loop stays free during async calls');
   assert.equal(r.sum, 60);
   assert.deepEqual(r.sumSteps, [10, 30, 60]);
   assert.equal(r.tsfnSum, 60);
@@ -23,9 +24,9 @@ test('node-parent: every flow over the real socket boundary', async () => {
   assert.equal(r.big, '42');
   assert.equal(r.counter, 7);
 
-  // Async class: create + async mutate + async getter + async cross-method return.
+  // Class: sync ctor + async mutate + sync getter + async cross-method return.
   assert.equal(r.afterAdd, 8, 'async add mutates provider-side state');
-  assert.equal(r.value, 8, 'async getter reads mutated state');
+  assert.equal(r.value, 8, 'sync getter reads mutated state');
   assert.equal(r.childValue, 108, 'forkSlow snapshots parent+by');
   assert.equal(r.parentUnchanged, 8, 'parent unaffected by child');
   assert.equal(r.madeValue, 40, 'free-fn factory returns a working class instance');

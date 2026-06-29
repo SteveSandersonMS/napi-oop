@@ -18,15 +18,8 @@ import { Role } from './messages';
 
 export { encodeFrame, createFrameDecoder } from './framing';
 export { Peer } from './peer';
-export { createBinding, bindClassesAsync, camelToSnake, type AsyncCaller } from './binding';
-export {
-  generateDts,
-  generateJs,
-  generateTs,
-  parseManifest,
-  type Manifest,
-  type FnSignature,
-} from './codegen';
+export { camelToSnake } from './binding';
+export { generateTs, parseManifest, type Manifest, type FnSignature } from './codegen';
 export {
   launchProviderSync,
   connectFromEnvSync,

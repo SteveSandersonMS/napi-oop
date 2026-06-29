@@ -4,16 +4,13 @@
 // - Child mode (`NAPI_OOP_SOCKET` set, i.e. a Rust parent spawned us): connect
 //   back to the parent and call it.
 //
-// Either way the call logic — and the result — is identical.
+// One binding, faithful to native: sync Rust fns block for their value while
+// `async` ones surface as non-blocking Promises. Either way the call logic — and
+// the result — is identical.
 
 import { join } from 'path';
 
-import {
-  Peer,
-  SOCKET_ENV,
-  connectFromEnv,
-  launchProvider,
-} from 'napi-oop-runtime';
+import { SOCKET_ENV, connectFromEnvSync, launchProviderSync, type SyncProvider } from 'napi-oop-runtime';
 
 import { bind } from './generated/bindings';
 
@@ -22,55 +19,43 @@ function providerCommand(): string {
   return join(__dirname, '..', '..', '..', 'target', 'release', 'add-numbers-provider');
 }
 
-async function callAddNumbers(peer: Peer): Promise<void> {
-  const native = bind(peer);
-  const a = 2;
-  const b = 3;
-  const result = await native.addNumbers(a, b);
+async function callAddNumbers(provider: SyncProvider): Promise<void> {
+  const native = bind(provider);
   const role = process.env[SOCKET_ENV] ? 'rust-parent' : 'node-parent';
-  console.log(`[${role}] addNumbers(${a}, ${b}) = ${result}`);
 
-  // Async Rust fn, called concurrently: two 200ms calls overlap (~200ms total,
-  // not ~400ms), proving concurrent dispatch.
+  // Sync Rust fn: blocks and returns the value directly.
+  const result = native.addNumbers(2, 3);
+  console.log(`[${role}] addNumbers(2, 3) = ${result}`);
+
+  // Async Rust fn: surfaces as a Promise and dispatches without blocking the
+  // event loop. Two 200ms calls overlap (~200ms total, not ~400ms).
   const t0 = Date.now();
   const [p, q] = await Promise.all([native.multiplySlow(6, 7), native.multiplySlow(8, 9)]);
-  console.log(
-    `[${role}] multiplySlow x2 => ${p}, ${q} in ${Date.now() - t0}ms (concurrent)`
-  );
+  console.log(`[${role}] multiplySlow x2 => ${p}, ${q} in ${Date.now() - t0}ms (concurrent)`);
 
-  // Callback param: Rust invokes the JS function once per step (a→b round-trip).
+  // Callback param: Rust invokes the JS function once per step during the call.
   const steps: number[] = [];
-  const total = await native.sumEach([10, 20, 30], (running) => {
+  const total = native.sumEach([10, 20, 30], (running) => {
     steps.push(running);
   });
   console.log(`[${role}] sumEach => ${total}, steps=[${steps.join(', ')}]`);
 
   // The explicit ThreadsafeFunction form — same fire-and-forget semantics.
   const tsteps: number[] = [];
-  const tt = await native.sumEachTsfn([10, 20, 30], (running) => {
+  const tt = native.sumEachTsfn([10, 20, 30], (running) => {
     tsteps.push(running);
   });
   console.log(`[${role}] sumEachTsfn => ${tt}, steps=[${tsteps.join(', ')}]`);
 }
 
 async function main(): Promise<void> {
-  if (process.env[SOCKET_ENV]) {
-    // Child: a Rust parent spawned us and is listening on the socket.
-    const peer = await connectFromEnv();
-    try {
-      await callAddNumbers(peer);
-    } finally {
-      peer.close();
-    }
-    return;
-  }
-
-  // Parent: spawn the Rust provider as our child.
-  const provider = await launchProvider({ command: providerCommand() });
+  const provider = process.env[SOCKET_ENV]
+    ? connectFromEnvSync()
+    : launchProviderSync({ command: providerCommand() });
   try {
-    await callAddNumbers(provider.peer);
+    await callAddNumbers(provider);
   } finally {
-    await provider.close();
+    provider.close();
   }
 }
 

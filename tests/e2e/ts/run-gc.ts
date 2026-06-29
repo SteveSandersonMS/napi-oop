@@ -1,11 +1,12 @@
 // E2E driver for External GC release. Mints many External handles, drops the
 // references, forces GC, and lets the runtime's FinalizationRegistry tell the
 // provider to free each slab entry. Requires `node --expose-gc`. Prints the
-// provider's live-handle count before and after collection.
+// provider's live-handle count before and after collection. Uses the single
+// (worker-backed) binding, whose `trackExternal` releases over the async port.
 
 import { join } from 'path';
 
-import { launchProvider } from 'napi-oop-runtime';
+import { launchProviderSync } from 'napi-oop-runtime';
 
 import { bind, type Fixture, type ExternalObject } from './generated/bindings';
 
@@ -18,24 +19,24 @@ const N = 500;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main(): Promise<void> {
-  const provider = await launchProvider({ command: providerCommand() });
+  const provider = launchProviderSync({ command: providerCommand() });
   try {
-    const native: Fixture = bind(provider.peer);
+    const native: Fixture = bind(provider);
 
     let handles: ExternalObject[] = [];
-    for (let i = 0; i < N; i++) handles.push(await native.makeCounter(i));
-    const before = await native.liveCounters();
+    for (let i = 0; i < N; i++) handles.push(native.makeCounter(i));
+    const before = native.liveCounters();
 
     handles = [];
-    for (let i = 0; i < 50 && (await native.liveCounters()) > 0; i++) {
+    for (let i = 0; i < 50 && native.liveCounters() > 0; i++) {
       global.gc!();
       await sleep(20);
     }
-    const after = await native.liveCounters();
+    const after = native.liveCounters();
 
     console.log('RESULT ' + JSON.stringify({ before, after }));
   } finally {
-    await provider.close();
+    provider.close();
   }
 }
 

@@ -1,11 +1,15 @@
-// Worker thread backing the synchronous calling variant.
+// Worker thread backing the provider handle.
 //
 // All socket I/O lives here. The worker launches (or connects to) the provider
-// and owns the async `Peer`. The main thread blocks on `Atomics.wait` over a
-// shared Int32Array; for each request the worker performs the async call, posts
-// the structured-clone result back over a MessagePort, then bumps + notifies the
-// signal so the main thread wakes and reads the result with
-// `receiveMessageOnPort`. This keeps the main thread's API fully synchronous.
+// and owns the async `Peer`. Two channels reach the main thread:
+//
+//  - `port` (sync): the main thread blocks on `Atomics.wait` for each sync call;
+//    the worker performs the call, posts the result, then bumps + notifies the
+//    signal. Callbacks fired *while a sync call is in flight* go here too, so the
+//    main thread drains and fires them synchronously before the call returns.
+//  - `asyncPort` (async): non-blocking `async` calls, their results, External
+//    releases, and callbacks fired while the main thread is idle. Delivered on
+//    the main thread's event loop, so they never block it.
 
 import { workerData, MessagePort } from 'worker_threads';
 
@@ -15,26 +19,41 @@ import type { Peer } from './peer';
 interface InitData {
   signal: Int32Array;
   port: MessagePort;
+  asyncPort: MessagePort;
   mode: 'launch' | 'connectEnv' | 'connectPath';
   command?: string;
   args?: string[];
   socketPath?: string;
 }
 
-interface CallRequest {
+interface SyncRequest {
   fn: string;
   args: unknown[];
 }
 
-type CallResult = { ok: true; result: unknown } | { ok: false; error: string };
+interface AsyncRequest {
+  asyncCall: true;
+  id: number;
+  fn: string;
+  args: unknown[];
+}
 
-const { signal, port, mode, command, args, socketPath } = workerData as InitData;
+interface ReleaseRequest {
+  release: true;
+  token: number;
+}
+
+const { signal, port, asyncPort, mode, command, args, socketPath } = workerData as InitData;
 
 let close: (() => void | Promise<void>) | undefined;
 
 function wake(): void {
   Atomics.store(signal, 0, 1);
   Atomics.notify(signal, 0);
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** True if `v` is a `{ __napi_cb: number }` callback marker. */
@@ -64,38 +83,73 @@ void init().then(
     port.postMessage({ ready: true });
     wake();
 
-    port.on('message', (msg: CallRequest | { close: true }) => {
+    // True exactly while a blocking sync call is being serviced — i.e. while the
+    // main thread is parked in `Atomics.wait`. Callbacks fired in this window are
+    // routed over the sync port so they are drained synchronously; otherwise the
+    // main thread is in its event loop and callbacks go over the async port.
+    let syncInFlight = false;
+
+    const installCallback = (handle: number): void => {
+      peer.registerCallback(handle, (...cbArgs: unknown[]) => {
+        if (syncInFlight) {
+          port.postMessage({ cb: true, handle, args: cbArgs });
+          wake();
+        } else {
+          asyncPort.postMessage({ cb: true, handle, args: cbArgs });
+        }
+      });
+    };
+
+    const installCallbacks = (callArgs: unknown[]): void => {
+      for (const a of callArgs) {
+        const handle = callbackHandle(a);
+        if (handle !== undefined) installCallback(handle);
+      }
+    };
+
+    port.on('message', (msg: SyncRequest | { close: true }) => {
       if ('close' in msg) {
-        Promise.resolve(close?.()).then(() => peer.close()).finally(wake);
+        Promise.resolve(close?.())
+          .then(() => peer.close())
+          .finally(wake);
         return;
       }
-      // Install a forwarding proxy for each callback marker so provider
-      // invocations are posted to the (blocked) main thread to fire later.
-      for (const a of msg.args) {
-        const handle = callbackHandle(a);
-        if (handle !== undefined) {
-          peer.registerCallback(handle, (...cbArgs: unknown[]) => {
-            port.postMessage({ cb: true, handle, args: cbArgs });
-            wake();
-          });
-        }
-      }
+      installCallbacks(msg.args);
+      syncInFlight = true;
       peer.call(msg.fn, msg.args).then(
         (result) => {
-          port.postMessage({ ok: true, result } satisfies CallResult);
+          syncInFlight = false;
+          port.postMessage({ ok: true, result });
           wake();
         },
         (err: unknown) => {
-          const error = err instanceof Error ? err.message : String(err);
-          port.postMessage({ ok: false, error } satisfies CallResult);
+          syncInFlight = false;
+          port.postMessage({ ok: false, error: errorMessage(err) });
           wake();
         }
       );
     });
+
+    asyncPort.on('message', (msg: AsyncRequest | ReleaseRequest) => {
+      if ('release' in msg) {
+        peer.releaseExternal(msg.token);
+        return;
+      }
+      installCallbacks(msg.args);
+      peer.call(msg.fn, msg.args).then(
+        (result) => asyncPort.postMessage({ asyncResult: true, id: msg.id, ok: true, result }),
+        (err: unknown) =>
+          asyncPort.postMessage({
+            asyncResult: true,
+            id: msg.id,
+            ok: false,
+            error: errorMessage(err),
+          })
+      );
+    });
   },
   (err: unknown) => {
-    const error = err instanceof Error ? err.message : String(err);
-    port.postMessage({ ok: false, error } satisfies CallResult);
+    port.postMessage({ ok: false, error: errorMessage(err) });
     wake();
   }
 );

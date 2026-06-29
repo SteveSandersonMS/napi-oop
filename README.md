@@ -7,10 +7,11 @@ using the `napi::…` path — only a cargo feature picks the mode.
 
 > Status: both modes work end to end. **Out-of-process** has a **symmetric
 > bootstrap** — either Node or Rust may be the parent that spawns the other.
-> Node `await`s calls to `#[napi]` functions (`await addNumbers(2, 3) === 5`) or
-> calls them **synchronously** via a worker-backed blocking variant, and Rust can
-> invoke JS callbacks (`ThreadsafeFunction`). **In-process** builds an ordinary
-> native addon via `@napi-rs/cli`. See the examples.
+> Node calls `#[napi]` functions through one binding that mirrors native: sync
+> Rust fns block for their value (`addNumbers(2, 3) === 5`) while `async` ones
+> surface as non-blocking `Promise<T>`. Rust can invoke JS callbacks
+> (`ThreadsafeFunction`). **In-process** builds an ordinary native addon via
+> `@napi-rs/cli`. See the examples.
 
 ## Repository layout
 
@@ -59,7 +60,6 @@ npm run build -w napi-oop-example-add-numbers  # build the example (cargo + tsc)
 # Run it (symmetric bootstrap — either process can be the parent):
 npm run start:node-parent -w napi-oop-example-add-numbers  # Node spawns Rust
 npm run start:rust-parent -w napi-oop-example-add-numbers  # Rust spawns Node
-npm run start:sync        -w napi-oop-example-add-numbers  # blocking/sync call
 ```
 
 Both print `addNumbers(2, 3) = 5`. The parent generates a named-socket path and
@@ -83,17 +83,18 @@ its in-proc facade features are mutually exclusive with the out-of-proc examples
 
 The Rust `#[napi]` signatures are the IDL. The provider prints a type manifest
 (`<provider> --emit-manifest`); the `napi-oop-codegen` CLI turns it into a typed
-`bindings.ts` (both an async `Promise<T>` interface and a sync one), so the
-caller never hand-writes interfaces. The example regenerates them in its
-`build:types` step, then imports `bind(peer)` / `bindSync(provider)`.
+`bindings.ts` exposing a single `bind(provider)` that mirrors native: sync fns
+return `T`, `async` fns return `Promise<T>`. The caller never hand-writes
+interfaces. The example regenerates them in its `build:types` step, then imports
+`bind(provider)`.
 
 ### Async Rust + concurrency
 
 `async fn` providers are detected from the `async` keyword and dispatched
 concurrently across a fixed worker pool (sized to `available_parallelism`), so
 overlapping calls overlap their latency without spawning a thread per request.
-The manifest marks them async, so they surface as `Promise<T>` in **both** the
-async and sync bindings: a sync binding never hides asynchrony. `multiplySlow` in
+The manifest marks them async, so they surface as `Promise<T>` from the single
+binding: asynchrony is never hidden behind a blocking call. `multiplySlow` in
 the example proves two 200ms calls finish in ~200ms.
 
 There's also a **tokio** example: enable napi-oop's `tokio` feature so `block_on`
@@ -105,8 +106,9 @@ work. `examples/tokio-fetch` runs three `tokio::time::sleep(200ms)` calls in
 
 Providers can invoke JS callbacks fire-and-forget, matching napi-rs semantics:
 accept either an `impl Fn(..)` parameter or an explicit `ThreadsafeFunction<T>`,
-and the runtime routes invocations back over the socket. Sync calls reject
-callback arguments (they throw) since there is no event loop to drain them.
+and the runtime routes invocations back over the socket. Callbacks fired during a
+blocking sync call are drained before the call returns; those fired while the main
+thread is idle arrive on the event loop.
 
 
 

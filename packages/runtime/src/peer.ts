@@ -41,6 +41,13 @@ export class Peer {
     if (token !== undefined) this.externals.register(value as object, token);
   }
 
+  /** Free a provider-side External slab entry by token (fire-and-forget). Used
+   *  by the worker-backed provider handle, whose main-thread `FinalizationRegistry`
+   *  detects the GC and asks the worker to release. */
+  releaseExternal(token: number): void {
+    if (!this.closed) this.socket.write(encodeFrame({ type: 'releaseExternal', token }));
+  }
+
   private constructor(
     private readonly socket: Socket,
     /** The peer's advertised `Hello` (role + the functions it exposes). */

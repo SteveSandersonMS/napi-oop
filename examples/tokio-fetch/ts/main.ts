@@ -1,10 +1,12 @@
-// Calls a tokio-based async Rust provider. The fn surfaces as Promise<number>;
-// concurrent calls overlap on tokio's runtime. Symmetric bootstrap, like
-// add-numbers: child when NAPI_OOP_SOCKET is set, else parent.
+// Calls a tokio-based async Rust provider. `fetch_len` is an `async fn`, so the
+// single binding surfaces it as `Promise<number>` and dispatches it without
+// blocking the event loop; concurrent calls overlap on tokio's runtime.
+// Symmetric bootstrap, like add-numbers: child when NAPI_OOP_SOCKET is set, else
+// parent.
 
 import { join } from 'path';
 
-import { Peer, SOCKET_ENV, connectFromEnv, launchProvider } from 'napi-oop-runtime';
+import { SOCKET_ENV, connectFromEnvSync, launchProviderSync, type SyncProvider } from 'napi-oop-runtime';
 
 import { bind } from './generated/bindings';
 
@@ -12,8 +14,8 @@ function providerCommand(): string {
   return join(__dirname, '..', '..', '..', 'target', 'release', 'tokio-fetch-provider');
 }
 
-async function run(peer: Peer): Promise<void> {
-  const native = bind(peer);
+async function run(provider: SyncProvider): Promise<void> {
+  const native = bind(provider);
   const role = process.env[SOCKET_ENV] ? 'rust-parent' : 'node-parent';
   const t0 = Date.now();
   const [a, b, c] = await Promise.all([
@@ -25,20 +27,13 @@ async function run(peer: Peer): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (process.env[SOCKET_ENV]) {
-    const peer = await connectFromEnv();
-    try {
-      await run(peer);
-    } finally {
-      peer.close();
-    }
-    return;
-  }
-  const provider = await launchProvider({ command: providerCommand() });
+  const provider = process.env[SOCKET_ENV]
+    ? connectFromEnvSync()
+    : launchProviderSync({ command: providerCommand() });
   try {
-    await run(provider.peer);
+    await run(provider);
   } finally {
-    await provider.close();
+    provider.close();
   }
 }
 
