@@ -70,6 +70,38 @@ pub fn live_counters() -> i32 {
     napi_oop::types::external_slab_len() as i32
 }
 
+/// A stateful #[napi] class: ctor + mutating method + getter + a method that
+/// returns a fresh instance, exercising class state living provider-side and
+/// round-tripping by handle.
+#[napi]
+pub struct Counter {
+    value: i32,
+}
+
+#[napi]
+impl Counter {
+    #[napi(constructor)]
+    pub fn new(start: i32) -> Self {
+        Counter { value: start }
+    }
+
+    #[napi]
+    pub fn add(&mut self, n: i32) -> i32 {
+        self.value += n;
+        self.value
+    }
+
+    #[napi(getter)]
+    pub fn value(&self) -> i32 {
+        self.value
+    }
+
+    #[napi]
+    pub fn fork(&self) -> Counter {
+        Counter { value: self.value }
+    }
+}
+
 fn main() {
     let mut argv = std::env::args().skip(1);
     let first = argv.next();

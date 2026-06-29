@@ -14,7 +14,7 @@
 
 use serde::Serialize;
 
-use crate::registry::RegisteredFn;
+use crate::registry::{RegisteredFn, RegisteredMethod};
 
 /// One function's signature, with TypeScript types already mapped. The JS name is
 /// the camelCase form napi-rs would expose.
@@ -35,10 +35,31 @@ pub struct FnSignature {
     pub is_async: bool,
 }
 
+/// One class method's signature, TS types mapped. `constructor` is the ctor.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MethodSignature {
+    pub js_name: String,
+    pub rust_name: String,
+    pub param_names: Vec<String>,
+    pub params: Vec<String>,
+    pub ret: String,
+    pub is_async: bool,
+    pub is_getter: bool,
+}
+
+/// One `#[napi]` class: its name and methods (incl. the constructor). The TS
+/// generator emits a proxy class whose instances hold the provider-side handle.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ClassSignature {
+    pub name: String,
+    pub methods: Vec<MethodSignature>,
+}
+
 /// The full set of exposed functions, ready to serialize for the TS generator.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Manifest {
     pub functions: Vec<FnSignature>,
+    pub classes: Vec<ClassSignature>,
 }
 
 /// Map a (whitespace-stripped) Rust type to its TypeScript equivalent. Falls back
@@ -128,6 +149,7 @@ fn snake_to_camel(name: &str) -> String {
 pub fn manifest() -> Manifest {
     let functions = inventory::iter::<RegisteredFn>
         .into_iter()
+        .filter(|f| !f.name.contains('.')) // class methods are grouped below
         .map(|f| FnSignature {
             js_name: snake_to_camel(f.name),
             rust_name: f.name.to_string(),
@@ -137,7 +159,25 @@ pub fn manifest() -> Manifest {
             is_async: f.is_async,
         })
         .collect();
-    Manifest { functions }
+    let mut classes: Vec<ClassSignature> = Vec::new();
+    let class_names: std::collections::HashSet<&str> =
+        inventory::iter::<RegisteredMethod>.into_iter().map(|m| m.class).collect();
+    for m in inventory::iter::<RegisteredMethod> {
+        let method = MethodSignature {
+            js_name: m.method.to_string(),
+            rust_name: m.rust_name.to_string(),
+            param_names: m.param_names.iter().map(|n| snake_to_camel(n)).collect(),
+            params: m.params.iter().map(|t| rust_to_ts(t)).collect(),
+            ret: if class_names.contains(m.ret) { m.ret.to_string() } else { rust_to_ts(m.ret) },
+            is_async: m.is_async,
+            is_getter: m.is_getter,
+        };
+        match classes.iter_mut().find(|c| c.name == m.class) {
+            Some(c) => c.methods.push(method),
+            None => classes.push(ClassSignature { name: m.class.to_string(), methods: vec![method] }),
+        }
+    }
+    Manifest { functions, classes }
 }
 
 /// Serialize the manifest to pretty JSON for the TS generator to consume.

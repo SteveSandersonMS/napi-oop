@@ -17,4 +17,11 @@ test('sync bindings: blocking call, awaited async, deferred callbacks', async ()
   assert.equal(r.product, 42);
   assert.equal(r.sum, 60);
   assert.deepEqual(r.steps, [10, 30, 60]);
+
+  // Class state lives provider-side; fork() yields an independent instance.
+  assert.equal(r.afterAdd, 8, 'add() mutates provider-side state');
+  assert.equal(r.value, 8, 'getter reads mutated state');
+  assert.equal(r.childValue, 8, 'fork() snapshots parent value');
+  assert.equal(r.childAfterAdd, 108, 'child mutates independently');
+  assert.equal(r.parentUnchanged, 8, 'parent unaffected by child mutation');
 });

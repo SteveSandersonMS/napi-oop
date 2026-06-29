@@ -68,6 +68,25 @@ pub fn callback_handle(value: &Value) -> Result<u64, WireError> {
     Err(WireError("argument is not a callback handle".into()))
 }
 
+/// Build the wire marker for an external/object handle: `{ "__napi_ext": <id> }`.
+pub fn external_marker(token: u64) -> Value {
+    Value::Map(vec![(Value::from(crate::types::EXTERNAL_KEY), Value::from(token))])
+}
+
+/// Extract an external/object handle token from its wire marker.
+pub fn external_handle(value: &Value) -> Result<u64, String> {
+    if let Value::Map(entries) = value {
+        for (k, v) in entries {
+            if k.as_str() == Some(crate::types::EXTERNAL_KEY) {
+                if let Some(id) = v.as_u64() {
+                    return Ok(id);
+                }
+            }
+        }
+    }
+    Err("argument is not an object/external handle".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

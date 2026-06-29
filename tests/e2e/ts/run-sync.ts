@@ -23,7 +23,30 @@ async function main(): Promise<void> {
     const steps: number[] = [];
     const sum = native.sumEach([10, 20, 30], (running) => steps.push(running)) as number;
 
-    console.log('RESULT ' + JSON.stringify({ role: 'node-parent:sync', add, product, sum, steps }));
+    // Class: provider-side state lives across calls; fork() returns a fresh instance.
+    const counter = new native.Counter(5);
+    const afterAdd = counter.add(3);
+    const value = counter.value;
+    const child = counter.fork();
+    const childValue = child.value;
+    const childAfterAdd = child.add(100);
+    const parentUnchanged = counter.value;
+
+    console.log(
+      'RESULT ' +
+        JSON.stringify({
+          role: 'node-parent:sync',
+          add,
+          product,
+          sum,
+          steps,
+          afterAdd,
+          value,
+          childValue,
+          childAfterAdd,
+          parentUnchanged,
+        })
+    );
   } finally {
     provider.close();
   }

@@ -31,6 +31,7 @@ export {
   launchProviderSync,
   connectFromEnvSync,
   createSyncBinding,
+  bindClasses,
   type SyncProvider,
   type LaunchSyncOptions,
 } from './sync';

@@ -123,9 +123,38 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
   };
 }
 
+/** Provider-bound class constructors keyed by class name. */
+type ClassMap = Record<string, new (...args: unknown[]) => unknown>;
+
 /** Launch a provider child and return a synchronous handle (Node is parent). */
 export function launchProviderSync(options: LaunchSyncOptions): SyncProvider {
   return spawnSyncProvider('launch', options);
+}
+
+/**
+ * Attach class proxies to a sync binding. Generated classes take the
+ * `SyncProvider` as a trailing constructor arg; this wraps each so callers write
+ * `new native.Counter(5)` and the provider is injected automatically. Returns a
+ * binding that resolves class names to the bound ctors and everything else to
+ * the underlying function binding.
+ */
+export function bindClasses<T extends object>(
+  binding: T,
+  provider: SyncProvider,
+  classes: ClassMap
+): T {
+  const bound: Record<string, unknown> = {};
+  for (const [name, Ctor] of Object.entries(classes)) {
+    bound[name] = class extends (Ctor as new (...a: unknown[]) => object) {
+      constructor(...args: unknown[]) {
+        super(...args, provider);
+      }
+    };
+  }
+  return new Proxy(binding, {
+    get: (t, p) =>
+      typeof p === 'string' && p in bound ? bound[p] : (t as Record<PropertyKey, unknown>)[p],
+  });
 }
 
 /** Connect synchronously as a child, using the `NAPI_OOP_SOCKET` env var. */

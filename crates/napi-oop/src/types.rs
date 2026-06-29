@@ -163,6 +163,24 @@ pub fn external_slab_len() -> usize {
     EXTERNAL_SLAB.lock().unwrap().as_ref().map_or(0, |m| m.len())
 }
 
+/// Register a provider-side object (a `#[napi]` class instance) in the slab,
+/// minting a top-level token. Classes ride the same slab + GC-release path as
+/// `External`, so a finalized JS instance frees its Rust state — no leak.
+pub fn object_new(value: Box<dyn std::any::Any + Send>) -> u64 {
+    let token = EXTERNAL_NEXT.fetch_add(1, Ordering::Relaxed);
+    MINTED.with(|c| c.set(c.get() + 1));
+    EXTERNAL_SLAB.lock().unwrap().get_or_insert_with(HashMap::new).insert(token, value);
+    token
+}
+
+/// Run `f` against a live object by token, downcast to `T`. `None` if missing.
+pub fn with_object<T: 'static, R>(token: u64, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+    let mut guard = EXTERNAL_SLAB.lock().unwrap();
+    let map = guard.as_mut()?;
+    let any = map.get_mut(&token)?;
+    any.downcast_mut::<T>().map(f)
+}
+
 impl<T: Send + 'static> Serialize for External<T> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;

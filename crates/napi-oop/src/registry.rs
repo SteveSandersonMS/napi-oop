@@ -58,6 +58,26 @@ pub struct RegisteredFn {
 
 inventory::collect!(RegisteredFn);
 
+/// One method of a `#[napi]` class. The dispatch thunk is registered as a normal
+/// [`RegisteredFn`] under the wire name `Class.method`; this entry carries the
+/// extra metadata the TS generator needs to emit a class proxy.
+pub struct RegisteredMethod {
+    /// Owning class name (`SandboxHandle`).
+    pub class: &'static str,
+    /// JS method name (`isAlive`); `"constructor"` for the constructor.
+    pub method: &'static str,
+    /// Wire name the dispatcher routes on (`SandboxHandle.is_alive`).
+    pub rust_name: &'static str,
+    pub params: &'static [&'static str],
+    pub param_names: &'static [&'static str],
+    pub ret: &'static str,
+    pub is_async: bool,
+    /// True for a `#[napi(getter)]` — emitted as a TS accessor, not a method.
+    pub is_getter: bool,
+}
+
+inventory::collect!(RegisteredMethod);
+
 /// A [`Callbacks`] that drops every invocation — for fns that take no callbacks
 /// and for tests. (Fire-and-forget, so dropping is observably "queued, ignored".)
 pub struct NoCallbacks;
