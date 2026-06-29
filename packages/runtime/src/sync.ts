@@ -6,9 +6,12 @@
 // real call, posts the result over a MessagePort, then notifies; the main
 // thread wakes and pulls the (unbounded) result with `receiveMessageOnPort`.
 //
-// One call is in flight at a time, which matches synchronous semantics. Passing
-// a JS callback isn't supported here: a callback would need the event loop to
-// run, but the main thread is blocked, so `call` rejects callback args up front.
+// One call is in flight at a time, which matches synchronous semantics. JS
+// callbacks ARE supported: the main thread assigns each a handle and keeps the
+// function locally, sending only a {__napi_cb} marker to the worker. When the
+// provider fires a callback the worker forwards it to the main thread, which
+// drains the queued invocations between blocking calls (fire-and-forget, so
+// deferring while the main thread is blocked is safe).
 
 import { receiveMessageOnPort, MessageChannel, Worker } from 'worker_threads';
 import { join } from 'path';
@@ -30,6 +33,8 @@ export interface LaunchSyncOptions {
   socketPath?: string;
 }
 
+type Callback = (...args: unknown[]) => unknown;
+
 function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOptions): SyncProvider {
   // [1] signal: 0 = waiting, 1 = result ready. The worker bumps + notifies.
   const signal = new Int32Array(new SharedArrayBuffer(4));
@@ -42,17 +47,54 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
   worker.unref();
 
   let closed = false;
+  // Main-thread callback registry: handle -> JS function. The worker only ever
+  // sees the handle and forwards invocations back here to fire.
+  const callbacks = new Map<number, Callback>();
+  let nextHandle = 1;
+
+  const dispatchCallback = (handle: number, args: unknown[]): void => {
+    const cb = callbacks.get(handle);
+    if (!cb) return;
+    try {
+      cb(...args);
+    } catch {
+      // Fire-and-forget: callback errors are the caller's concern, not the wire's.
+    }
+  };
+
+  // Drain and fire any pending callback invocations the worker queued, returning
+  // the first non-callback (result/ready) message it finds.
+  const drain = (): unknown => {
+    for (;;) {
+      const wrapper = receiveMessageOnPort(port1);
+      if (!wrapper) return undefined;
+      const msg = wrapper.message as { cb: true; handle: number; args: unknown[] } | object;
+      if (msg && 'cb' in msg) {
+        const inv = msg as { handle: number; args: unknown[] };
+        dispatchCallback(inv.handle, inv.args);
+        continue;
+      }
+      return msg;
+    }
+  };
 
   const waitForResult = (): unknown => {
-    Atomics.wait(signal, 0, 0);
-    Atomics.store(signal, 0, 0);
-    const msg = receiveMessageOnPort(port1)?.message as
-      | { ready: true }
-      | { ok: true; result: unknown }
-      | { ok: false; error: string }
-      | undefined;
-    return msg;
+    for (;;) {
+      Atomics.wait(signal, 0, 0);
+      Atomics.store(signal, 0, 0);
+      const msg = drain();
+      if (msg !== undefined) return msg;
+    }
   };
+
+  // Replace function args with {__napi_cb} markers, keeping the function local.
+  const encodeArgs = (args: unknown[]): unknown[] =>
+    args.map((a) => {
+      if (typeof a !== 'function') return a;
+      const handle = nextHandle++;
+      callbacks.set(handle, a as Callback);
+      return { __napi_cb: handle };
+    });
 
   // Block until the worker has connected/launched and handshaked.
   const ready = waitForResult() as { ok: false; error: string } | { ready: true } | undefined;
@@ -64,14 +106,7 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
   return {
     call(fn, args) {
       if (closed) throw new Error('provider is closed');
-      if (args.some((a) => typeof a === 'function')) {
-        throw new Error(
-          `sync binding cannot pass a callback to '${fn}': callbacks need the event ` +
-            'loop, which is blocked in sync mode. Use the async binding for functions ' +
-            'that take a callback.'
-        );
-      }
-      port1.postMessage({ fn, args });
+      port1.postMessage({ fn, args: encodeArgs(args) });
       const msg = waitForResult() as { ok: true; result: unknown } | { ok: false; error: string };
       if (msg.ok) return msg.result;
       throw new Error(msg.error);

@@ -5,6 +5,7 @@
 use napi_oop::codec::{Message, Request};
 use napi_oop::registry;
 use napi_oop::rmpv::Value;
+use napi_oop::wire::from_wire;
 use napi_oop_macro::napi;
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +77,31 @@ pub fn sum_each_tsfn(values: Vec<i32>, on_step: napi_oop::ThreadsafeFunction<i32
         on_step.call(total, NonBlocking);
     }
     total
+}
+
+/// Buffer round-trips as binary on the wire; here we reverse the bytes.
+#[napi]
+pub fn reverse_bytes(b: napi_oop::Buffer) -> napi_oop::Buffer {
+    let mut v = b.to_vec();
+    v.reverse();
+    napi_oop::Buffer::from(v)
+}
+
+/// BigInt round-trips as an opaque u64 handle; double the handle value.
+#[napi]
+pub fn double_handle(n: napi_oop::BigInt) -> napi_oop::BigInt {
+    napi_oop::BigInt::from(n.words.wrapping_mul(2))
+}
+
+/// External round-trips as a token; create then read back through the slab.
+#[napi]
+pub fn make_external(seed: i32) -> napi_oop::External<i32> {
+    napi_oop::External::new(seed)
+}
+
+#[napi]
+pub fn read_external(handle: napi_oop::External<i32>) -> i32 {
+    handle.cloned().unwrap_or(-1)
 }
 
 fn call(function: &str, id: u64, args: Vec<Value>) -> Message {
@@ -273,4 +299,49 @@ fn callback_manifest_renders_ts_fn_type() {
         let f = m.functions.iter().find(|f| f.rust_name == name).unwrap();
         assert_eq!(f.params, vec!["Array<number>", "(a0:number)=>void"], "{name}");
     }
+}
+
+#[test]
+fn buffer_round_trips_through_dispatch() {
+    let buf = Value::Binary(vec![1, 2, 3, 4]);
+    match call("reverse_bytes", 20, vec![buf]) {
+        Message::Response(r) => {
+            assert_eq!(r.result, Value::Binary(vec![4, 3, 2, 1]));
+        }
+        other => panic!("expected response, got {other:?}"),
+    }
+    let m = napi_oop::manifest::manifest();
+    let f = m.functions.iter().find(|f| f.rust_name == "reverse_bytes").unwrap();
+    assert_eq!(f.params, vec!["Uint8Array"]);
+    assert_eq!(f.ret, "Uint8Array");
+}
+
+#[test]
+fn bigint_round_trips_through_dispatch() {
+    let big = Value::from(21u64);
+    match call("double_handle", 21, vec![big]) {
+        Message::Response(r) => {
+            assert_eq!(from_wire::<napi_oop::BigInt>(r.result).unwrap().words, 42);
+        }
+        other => panic!("expected response, got {other:?}"),
+    }
+    let m = napi_oop::manifest::manifest();
+    let f = m.functions.iter().find(|f| f.rust_name == "double_handle").unwrap();
+    assert_eq!(f.ret, "bigint");
+}
+
+#[test]
+fn external_round_trips_via_token_through_dispatch() {
+    let token = match call("make_external", 22, vec![Value::from(99i64)]) {
+        Message::Response(r) => r.result,
+        other => panic!("expected response, got {other:?}"),
+    };
+    assert!(token.as_map().is_some(), "external should be a token map");
+    match call("read_external", 23, vec![token]) {
+        Message::Response(r) => assert_eq!(r.result.as_i64(), Some(99)),
+        other => panic!("expected response, got {other:?}"),
+    }
+    let m = napi_oop::manifest::manifest();
+    let f = m.functions.iter().find(|f| f.rust_name == "read_external").unwrap();
+    assert_eq!(f.params, vec!["ExternalObject"]);
 }

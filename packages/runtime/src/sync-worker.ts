@@ -37,6 +37,15 @@ function wake(): void {
   Atomics.notify(signal, 0);
 }
 
+/** True if `v` is a `{ __napi_cb: number }` callback marker. */
+function callbackHandle(v: unknown): number | undefined {
+  if (v && typeof v === 'object' && '__napi_cb' in v) {
+    const h = (v as { __napi_cb: unknown }).__napi_cb;
+    return typeof h === 'number' ? h : undefined;
+  }
+  return undefined;
+}
+
 async function init(): Promise<Peer> {
   if (mode === 'launch') {
     const provider = await launchProvider({ command: command!, args, socketPath });
@@ -59,6 +68,17 @@ void init().then(
       if ('close' in msg) {
         Promise.resolve(close?.()).then(() => peer.close()).finally(wake);
         return;
+      }
+      // Install a forwarding proxy for each callback marker so provider
+      // invocations are posted to the (blocked) main thread to fire later.
+      for (const a of msg.args) {
+        const handle = callbackHandle(a);
+        if (handle !== undefined) {
+          peer.registerCallback(handle, (...cbArgs: unknown[]) => {
+            port.postMessage({ cb: true, handle, args: cbArgs });
+            wake();
+          });
+        }
       }
       peer.call(msg.fn, msg.args).then(
         (result) => {

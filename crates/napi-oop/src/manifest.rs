@@ -44,12 +44,18 @@ pub struct Manifest {
 /// Map a (whitespace-stripped) Rust type to its TypeScript equivalent. Falls back
 /// to `unknown` for types not yet modelled (generalized in the type-system phase).
 pub fn rust_to_ts(rust: &str) -> String {
+    // Normalize away module paths on the outer type (`napi::Buffer` -> `Buffer`,
+    // `napi_oop::External<i32>` -> `External<i32>`) so `#[napi]` source compiles
+    // regardless of how the type was imported.
+    let rust = strip_outer_path(rust);
     match rust {
         "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "f32" | "f64" | "i64" | "u64" | "usize"
         | "isize" => "number".to_string(),
         "bool" => "boolean".to_string(),
         "String" | "&str" | "str" => "string".to_string(),
         "()" => "void".to_string(),
+        "Buffer" => "Uint8Array".to_string(),
+        "BigInt" => "bigint".to_string(),
         other => {
             if let Some(ts) = fn_type_to_ts(other) {
                 ts
@@ -57,6 +63,9 @@ pub fn rust_to_ts(rust: &str) -> String {
                 format!("Array<{}>", rust_to_ts(inner))
             } else if let Some(inner) = strip_generic(other, "Option") {
                 format!("{} | null", rust_to_ts(inner))
+            } else if strip_generic(other, "External").is_some() {
+                // Opaque JS-held handle; backed by a provider-side token.
+                "ExternalObject".to_string()
             } else {
                 "unknown".to_string()
             }
@@ -68,6 +77,16 @@ pub fn rust_to_ts(rust: &str) -> String {
 fn strip_generic<'a>(ty: &'a str, wrapper: &str) -> Option<&'a str> {
     let rest = ty.strip_prefix(wrapper)?.strip_prefix('<')?;
     rest.strip_suffix('>')
+}
+
+/// Strip a module path from the outer type name only, leaving generics intact:
+/// `napi::Buffer` -> `Buffer`, `napi_oop::External<i32>` -> `External<i32>`.
+fn strip_outer_path(ty: &str) -> &str {
+    let head_end = ty.find('<').unwrap_or(ty.len());
+    match ty[..head_end].rfind("::") {
+        Some(pos) => &ty[pos + 2..],
+        None => ty,
+    }
 }
 
 /// Map a callback param the macro encoded as `(a0:i32,a1:i32)=>i32` into a TS

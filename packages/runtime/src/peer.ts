@@ -100,6 +100,15 @@ export class Peer {
     return { __napi_cb: handle } satisfies CallbackRef;
   }
 
+  /**
+   * Register a callback under a caller-assigned handle. Used by the sync binding,
+   * where the main thread allocates handles and the worker installs a proxy that
+   * forwards each provider invocation back to the main thread (fire-and-forget).
+   */
+  registerCallback(handle: number, fn: Callback): void {
+    this.callbacks.set(handle, fn);
+  }
+
   /** Close the connection and reject any in-flight calls. */
   close(): void {
     if (this.closed) return;

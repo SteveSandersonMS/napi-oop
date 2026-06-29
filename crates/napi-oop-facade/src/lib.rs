@@ -8,14 +8,14 @@
 #[cfg(feature = "out-of-proc")]
 pub use napi_oop_macro::napi;
 #[cfg(feature = "out-of-proc")]
-pub use napi_oop::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+pub use napi_oop::{BigInt, Buffer, External, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 #[cfg(feature = "out-of-proc")]
 pub mod threadsafe_function {
     pub use napi_oop::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 }
 #[cfg(feature = "out-of-proc")]
 pub mod bindgen_prelude {
-    pub use napi_oop::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+    pub use napi_oop::{BigInt, Buffer, External, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 }
 
 // In-proc: pass real napi-rs through under the `napi::` path.
