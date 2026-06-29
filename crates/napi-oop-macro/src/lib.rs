@@ -339,10 +339,6 @@ mod out_of_proc {
 
         let arity = arg_types.len();
         let arg_idents: Vec<_> = (0..arity).map(|i| format_ident!("__arg{i}")).collect();
-        // Host-injected params (`Env`) carry no JS argument: they are bound to a
-        // synthetic value, excluded from the wire arity, and omitted from the
-        // manifest's parameter list.
-        let wire_arity = arg_types.iter().filter(|ty| !is_env_ty(ty)).count();
         let decode_args = arg_idents.iter().zip(arg_types.iter()).map(decode_arg);
 
         // Stringify each Rust type for the manifest the TS generator consumes;
@@ -404,14 +400,11 @@ mod out_of_proc {
                     __args: ::std::vec::Vec<::napi_oop::rmpv::Value>,
                     __cb: &::std::sync::Arc<dyn ::napi_oop::registry::Callbacks>,
                 ) -> ::core::result::Result<::napi_oop::rmpv::Value, ::std::string::String> {
-                    if __args.len() != #wire_arity {
-                        return ::core::result::Result::Err(::std::format!(
-                            "{} expected {} argument(s), got {}",
-                            #fn_name_str,
-                            #wire_arity,
-                            __args.len(),
-                        ));
-                    }
+                    // napi-rs treats trailing args as optional: a caller may omit
+                    // trailing `Option<T>` arguments (they arrive as `undefined`,
+                    // decoded here as nil -> `None`) and any extra args are ignored.
+                    // So we don't enforce an exact arity — `decode_arg` pads missing
+                    // trailing args with nil and the iterator simply drops extras.
                     let mut __iter = __args.into_iter();
                     #(#decode_args)*
                     let __ret = #call_expr;
@@ -670,13 +663,13 @@ mod out_of_proc {
         }
         if let Some((inputs, _)) = fn_trait_sig(ty) {
             let cb: Vec<_> = (0..inputs.len()).map(|i| format_ident!("__c{i}")).collect();
-            quote! { let #ident = { let __h = ::napi_oop::wire::callback_handle(&__iter.next().unwrap()).map_err(|e| ::std::string::ToString::to_string(&e))?; let __cbh = ::napi_oop::tsfn::CallbackHandle::new(__h, ::std::sync::Arc::clone(__cb)); move |#(#cb: #inputs),*| { __cbh.invoke(::std::vec![#(::napi_oop::wire::to_wire(&#cb).unwrap()),*]); } }; }
+            quote! { let #ident = { let __h = ::napi_oop::wire::callback_handle(&__iter.next().unwrap_or(::napi_oop::rmpv::Value::Nil)).map_err(|e| ::std::string::ToString::to_string(&e))?; let __cbh = ::napi_oop::tsfn::CallbackHandle::new(__h, ::std::sync::Arc::clone(__cb)); move |#(#cb: #inputs),*| { __cbh.invoke(::std::vec![#(::napi_oop::wire::to_wire(&#cb).unwrap()),*]); } }; }
         } else if tsfn_inner(ty).is_some() {
-            quote! { let #ident = { let __h = ::napi_oop::wire::callback_handle(&__iter.next().unwrap()).map_err(|e| ::std::string::ToString::to_string(&e))?; ::napi_oop::ThreadsafeFunction::__new(__h, ::std::sync::Arc::clone(__cb)) }; }
+            quote! { let #ident = { let __h = ::napi_oop::wire::callback_handle(&__iter.next().unwrap_or(::napi_oop::rmpv::Value::Nil)).map_err(|e| ::std::string::ToString::to_string(&e))?; ::napi_oop::ThreadsafeFunction::__new(__h, ::std::sync::Arc::clone(__cb)) }; }
         } else if let Some(owned) = external_ref_inner(ty) {
-            quote! { let #ident: #owned = ::napi_oop::wire::from_wire(__iter.next().unwrap()).map_err(|e| ::std::string::ToString::to_string(&e))?; }
+            quote! { let #ident: #owned = ::napi_oop::wire::from_wire(__iter.next().unwrap_or(::napi_oop::rmpv::Value::Nil)).map_err(|e| ::std::string::ToString::to_string(&e))?; }
         } else {
-            quote! { let #ident: #ty = ::napi_oop::wire::from_wire(__iter.next().unwrap()).map_err(|e| ::std::string::ToString::to_string(&e))?; }
+            quote! { let #ident: #ty = ::napi_oop::wire::from_wire(__iter.next().unwrap_or(::napi_oop::rmpv::Value::Nil)).map_err(|e| ::std::string::ToString::to_string(&e))?; }
         }
     }
     fn fn_trait_sig(ty: &syn::Type) -> Option<(Vec<syn::Type>, syn::Type)> {

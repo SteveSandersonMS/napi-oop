@@ -28,6 +28,15 @@ pub fn greet(name: Option<String>) -> String {
     format!("hello, {}", name.as_deref().unwrap_or("world"))
 }
 
+/// A required param followed by a trailing `Option<T>`. napi-rs lets a caller
+/// omit the trailing optional entirely, so the binding may send *fewer* args
+/// than the declared arity; the missing tail must decode provider-side as
+/// `None` (rather than being rejected for arity).
+#[napi]
+pub fn scale(value: i32, factor: Option<i32>) -> i32 {
+    value * factor.unwrap_or(1)
+}
+
 #[napi]
 pub fn sum_each(values: Vec<i32>, on_step: impl Fn(i32)) -> i32 {
     let mut total = 0;

@@ -26,6 +26,11 @@ async function exercise(provider: SyncProvider) {
   const greetNone = native.greet(undefined);
   const greetSome = native.greet('Bert');
 
+  // Trailing Option<T> omitted: the binding sends *fewer* args than the declared
+  // arity, and the provider must decode the missing tail as `None` (factor=1).
+  const scaleOmitted = native.scale(7);
+  const scaleGiven = native.scale(7, 3);
+
   // Concurrency + non-blocking proof: two 200ms async calls overlap (finishing
   // well under 400ms), and a 30ms timer fires *while they are in flight* — which
   // can only happen if the event loop is never blocked during an async call.
@@ -108,6 +113,8 @@ async function exercise(provider: SyncProvider) {
     add,
     greetNone,
     greetSome,
+    scaleOmitted,
+    scaleGiven,
     multiply: [p, q],
     concurrentMs,
     timerFiredDuringCall,

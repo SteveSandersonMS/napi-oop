@@ -15,6 +15,8 @@ test('node-parent: every flow over the real socket boundary', async () => {
   assert.equal(r.add, 5);
   assert.equal(r.greetNone, 'hello, world', 'undefined Option<String> arg decodes as None');
   assert.equal(r.greetSome, 'hello, Bert', 'present Option<String> arg decodes as Some');
+  assert.equal(r.scaleOmitted, 7, 'omitted trailing Option arg decodes as None');
+  assert.equal(r.scaleGiven, 21, 'present trailing Option arg decodes as Some');
   assert.deepEqual(r.multiply, [42, 72]);
   assert.ok(r.concurrentMs < 350, `expected concurrent (<350ms), got ${r.concurrentMs}ms`);
   assert.equal(r.timerFiredDuringCall, true, 'event loop stays free during async calls');

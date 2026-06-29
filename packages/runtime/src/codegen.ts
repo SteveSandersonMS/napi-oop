@@ -101,7 +101,16 @@ export function parseManifest(json: string): Manifest {
 }
 
 function paramList(sig: FnSignature): string {
-  return sig.params.map((ty, i) => `${sig.paramNames[i] ?? `arg${i}`}: ${ty}`).join(', ');
+  // An `Option<T>` param maps to `… | undefined | null`; napi-rs marks such a
+  // param optional (`name?`) so callers may omit a trailing one. Mirror that so
+  // the generated surface matches napi-rs and trailing optionals can be dropped.
+  return sig.params
+    .map((ty, i) => {
+      const name = sig.paramNames[i] ?? `arg${i}`;
+      const optional = ty.endsWith('| undefined | null');
+      return `${name}${optional ? '?' : ''}: ${ty}`;
+    })
+    .join(', ');
 }
 
 /** The binding mirrors native semantics: a sync Rust fn returns its value `T`;
