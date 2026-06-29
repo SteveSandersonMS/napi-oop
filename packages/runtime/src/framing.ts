@@ -7,7 +7,11 @@ import { Packr } from 'msgpackr';
 
 // `useRecords: false` keeps payloads as plain MessagePack maps (no msgpackr's
 // record-extension shorthand), which is what `rmp-serde` produces and expects.
-const packr = new Packr({ useRecords: false });
+// `encodeUndefinedAsNil: true` encodes JS `undefined` as MessagePack nil (0xc0)
+// instead of msgpackr's default fixext marker, so a missing/`undefined` argument
+// or field decodes as Rust `None` rather than failing `rmp-serde` with an
+// "invalid type: newtype struct" error.
+const packr = new Packr({ useRecords: false, encodeUndefinedAsNil: true });
 
 /** Encode a message as a length-prefixed MessagePack frame. */
 export function encodeFrame(message: unknown): Buffer {

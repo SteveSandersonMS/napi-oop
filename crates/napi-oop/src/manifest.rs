@@ -112,7 +112,9 @@ pub fn rust_to_ts_with(rust: &str, known: &std::collections::HashSet<String>) ->
             } else if let Some(inner) = strip_generic(other, "Vec") {
                 format!("Array<{}>", rust_to_ts_with(inner, known))
             } else if let Some(inner) = strip_generic(other, "Option") {
-                format!("{} | null", rust_to_ts_with(inner, known))
+                // Matches napi-rs: an `Option<T>` accepts `undefined` or `null`
+                // (both decode provider-side as `None`).
+                format!("{} | undefined | null", rust_to_ts_with(inner, known))
             } else if strip_generic(other, "External").is_some() {
                 // Opaque JS-held handle; backed by a provider-side token.
                 "ExternalObject".to_string()
@@ -265,8 +267,8 @@ mod tests {
     #[test]
     fn maps_containers() {
         assert_eq!(rust_to_ts("Vec<i64>"), "Array<number>");
-        assert_eq!(rust_to_ts("Option<String>"), "string | null");
-        assert_eq!(rust_to_ts("Vec<Option<u8>>"), "Array<number | null>");
+        assert_eq!(rust_to_ts("Option<String>"), "string | undefined | null");
+        assert_eq!(rust_to_ts("Vec<Option<u8>>"), "Array<number | undefined | null>");
     }
 
     #[test]

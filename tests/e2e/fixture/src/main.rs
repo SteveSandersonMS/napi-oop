@@ -20,6 +20,14 @@ pub async fn multiply_slow(a: i32, b: i32) -> i32 {
     a * b
 }
 
+/// An `Option<String>` parameter: a missing/`undefined` argument must arrive as
+/// `None` (encoded over the wire as MessagePack nil, not msgpackr's `undefined`
+/// extension), and a present value as `Some`.
+#[napi]
+pub fn greet(name: Option<String>) -> String {
+    format!("hello, {}", name.as_deref().unwrap_or("world"))
+}
+
 #[napi]
 pub fn sum_each(values: Vec<i32>, on_step: impl Fn(i32)) -> i32 {
     let mut total = 0;

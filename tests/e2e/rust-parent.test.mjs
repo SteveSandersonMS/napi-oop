@@ -13,6 +13,8 @@ test('rust-parent: every flow with Rust spawning Node', async () => {
 
   assert.equal(r.role, 'rust-parent');
   assert.equal(r.add, 5);
+  assert.equal(r.greetNone, 'hello, world', 'undefined Option<String> arg decodes as None');
+  assert.equal(r.greetSome, 'hello, Bert', 'present Option<String> arg decodes as Some');
   assert.deepEqual(r.multiply, [42, 72]);
   assert.equal(r.timerFiredDuringCall, true, 'event loop stays free during async calls');
   assert.equal(r.sum, 60);

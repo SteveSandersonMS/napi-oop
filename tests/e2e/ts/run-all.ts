@@ -21,6 +21,11 @@ async function exercise(provider: SyncProvider) {
   // Sync fn: blocks and returns the value directly.
   const add = native.addNumbers(2, 3);
 
+  // Option<String> param: `undefined` must decode provider-side as `None`
+  // (wire nil), a present value as `Some`.
+  const greetNone = native.greet(undefined);
+  const greetSome = native.greet('Bert');
+
   // Concurrency + non-blocking proof: two 200ms async calls overlap (finishing
   // well under 400ms), and a 30ms timer fires *while they are in flight* — which
   // can only happen if the event loop is never blocked during an async call.
@@ -84,6 +89,8 @@ async function exercise(provider: SyncProvider) {
   return {
     role: process.env[SOCKET_ENV] ? 'rust-parent' : 'node-parent',
     add,
+    greetNone,
+    greetSome,
     multiply: [p, q],
     concurrentMs,
     timerFiredDuringCall,
