@@ -24,4 +24,5 @@ test('sync bindings: blocking call, awaited async, deferred callbacks', async ()
   assert.equal(r.childValue, 8, 'fork() snapshots parent value');
   assert.equal(r.childAfterAdd, 108, 'child mutates independently');
   assert.equal(r.parentUnchanged, 8, 'parent unaffected by child mutation');
+  assert.equal(r.madeValue, 40, 'free-fn factory returns a working class instance');
 });

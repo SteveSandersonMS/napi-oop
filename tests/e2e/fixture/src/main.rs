@@ -74,8 +74,16 @@ pub fn live_counters() -> i32 {
 /// returns a fresh instance, exercising class state living provider-side and
 /// round-tripping by handle.
 #[napi]
+#[derive(Clone)]
 pub struct Counter {
     value: i32,
+}
+
+/// A free-fn factory returning a class instance, exercising minting via the
+/// generated Serialize impl (the cross-class/factory path).
+#[napi]
+pub fn make_counter_class(start: i32) -> Counter {
+    Counter { value: start }
 }
 
 #[napi]
@@ -99,6 +107,22 @@ impl Counter {
     #[napi]
     pub fn fork(&self) -> Counter {
         Counter { value: self.value }
+    }
+
+    /// An async method returning a fresh instance, exercising async cross-method
+    /// class returns over the async binding.
+    #[napi]
+    pub async fn fork_slow(&self, by: i32) -> Counter {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        Counter { value: self.value + by }
+    }
+
+    /// An async mutating method, returning the new value as a Promise.
+    #[napi]
+    pub async fn add_slow(&mut self, n: i32) -> i32 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        self.value += n;
+        self.value
     }
 }
 

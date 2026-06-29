@@ -22,4 +22,11 @@ test('node-parent: every flow over the real socket boundary', async () => {
   assert.deepEqual(r.reversed, [4, 3, 2, 1]);
   assert.equal(r.big, '42');
   assert.equal(r.counter, 7);
+
+  // Async class: create + async mutate + async getter + async cross-method return.
+  assert.equal(r.afterAdd, 8, 'async add mutates provider-side state');
+  assert.equal(r.value, 8, 'async getter reads mutated state');
+  assert.equal(r.childValue, 108, 'forkSlow snapshots parent+by');
+  assert.equal(r.parentUnchanged, 8, 'parent unaffected by child');
+  assert.equal(r.madeValue, 40, 'free-fn factory returns a working class instance');
 });

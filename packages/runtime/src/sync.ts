@@ -22,6 +22,8 @@ import { camelToSnake } from './binding';
 export interface SyncProvider {
   /** Call a function synchronously, returning its value (or throwing on error). */
   call(fn: string, args: unknown[]): unknown;
+  /** Register a returned handle for release (best-effort; sync release is a no-op). */
+  trackExternal(value: unknown): void;
   /** Shut down the worker and underlying provider. */
   close(): void;
 }
@@ -111,6 +113,10 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
       if (msg.ok) return msg.result;
       throw new Error(msg.error);
     },
+    trackExternal() {
+      // Sync GC-driven release is not wired (one blocking call at a time leaves
+      // no safe point to fire a release); slab entries free on provider close.
+    },
     close() {
       if (closed) return;
       closed = true;
@@ -141,7 +147,8 @@ export function launchProviderSync(options: LaunchSyncOptions): SyncProvider {
 export function bindClasses<T extends object>(
   binding: T,
   provider: SyncProvider,
-  classes: ClassMap
+  classes: ClassMap,
+  factories: Record<string, { __fromHandle(p: SyncProvider, h: unknown): unknown }> = {}
 ): T {
   const bound: Record<string, unknown> = {};
   for (const [name, Ctor] of Object.entries(classes)) {
@@ -150,6 +157,10 @@ export function bindClasses<T extends object>(
         super(...args, provider);
       }
     };
+  }
+  for (const [name, Cls] of Object.entries(factories)) {
+    const wireName = camelToSnake(name);
+    bound[name] = (...args: unknown[]) => Cls.__fromHandle(provider, provider.call(wireName, args));
   }
   return new Proxy(binding, {
     get: (t, p) =>

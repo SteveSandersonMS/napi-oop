@@ -147,6 +147,8 @@ fn snake_to_camel(name: &str) -> String {
 
 /// Build the manifest from all registered `#[napi]` functions.
 pub fn manifest() -> Manifest {
+    let class_names: std::collections::HashSet<&str> =
+        inventory::iter::<RegisteredMethod>.into_iter().map(|m| m.class).collect();
     let functions = inventory::iter::<RegisteredFn>
         .into_iter()
         .filter(|f| !f.name.contains('.')) // class methods are grouped below
@@ -155,13 +157,11 @@ pub fn manifest() -> Manifest {
             rust_name: f.name.to_string(),
             param_names: f.param_names.iter().map(|n| snake_to_camel(n)).collect(),
             params: f.params.iter().map(|t| rust_to_ts(t)).collect(),
-            ret: rust_to_ts(f.ret),
+            ret: if class_names.contains(f.ret) { f.ret.to_string() } else { rust_to_ts(f.ret) },
             is_async: f.is_async,
         })
         .collect();
     let mut classes: Vec<ClassSignature> = Vec::new();
-    let class_names: std::collections::HashSet<&str> =
-        inventory::iter::<RegisteredMethod>.into_iter().map(|m| m.class).collect();
     for m in inventory::iter::<RegisteredMethod> {
         let method = MethodSignature {
             js_name: m.method.to_string(),

@@ -31,6 +31,7 @@ pub use types::{BigInt, Buffer, External};
 // the consumer needing them as direct dependencies.
 pub use inventory;
 pub use rmpv;
+pub use serde;
 
 // Drives `async fn` providers to completion inside the sync dispatch thunk. Each
 // request runs on its own thread, so blocking here still allows concurrent calls.

@@ -249,7 +249,22 @@ mod out_of_proc {
                 m.attrs.retain(|a| !a.path().is_ident("napi"));
             }
         }
-        quote! { #clean #(#thunks)* }.into()
+        // A class instance serializes by minting a slab token, so a fn (free or
+        // method) returning the class surfaces as an external handle uniformly.
+        // Requires `Clone` (a finite by-value mint of an instance with no GC
+        // double-free); instance methods mint directly to avoid relocking.
+        let serialize_impl = quote! {
+            impl ::napi_oop::serde::Serialize for #self_ty {
+                fn serialize<__S: ::napi_oop::serde::Serializer>(&self, __s: __S) -> ::core::result::Result<__S::Ok, __S::Error> {
+                    use ::napi_oop::serde::ser::SerializeMap;
+                    let __tok = ::napi_oop::types::object_new(::std::boxed::Box::new(::std::clone::Clone::clone(self)));
+                    let mut __m = __s.serialize_map(::core::option::Option::Some(1))?;
+                    __m.serialize_entry(::napi_oop::types::EXTERNAL_KEY, &__tok)?;
+                    __m.end()
+                }
+            }
+        };
+        quote! { #clean #serialize_impl #(#thunks)* }.into()
     }
 
     /// Build the dispatch thunk + registration for one constructor/method/getter.

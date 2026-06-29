@@ -32,6 +32,10 @@ async function main(): Promise<void> {
     const childAfterAdd = child.add(100);
     const parentUnchanged = counter.value;
 
+    // Free-fn factory returning a class instance (sync).
+    const made = native.makeCounterClass(40);
+    const madeValue = made.value;
+
     console.log(
       'RESULT ' +
         JSON.stringify({
@@ -45,6 +49,7 @@ async function main(): Promise<void> {
           childValue,
           childAfterAdd,
           parentUnchanged,
+          madeValue,
         })
     );
   } finally {

@@ -18,7 +18,7 @@ import { Role } from './messages';
 
 export { encodeFrame, createFrameDecoder } from './framing';
 export { Peer } from './peer';
-export { createBinding, camelToSnake } from './binding';
+export { createBinding, bindClassesAsync, camelToSnake, type AsyncCaller } from './binding';
 export {
   generateDts,
   generateJs,

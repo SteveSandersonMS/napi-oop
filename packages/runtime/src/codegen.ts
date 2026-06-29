@@ -148,22 +148,48 @@ exports.bindSync = (provider) => createSyncBinding(provider, asyncFns);
 /** Render a single self-contained `.ts` (interfaces + factories) — convenient
  *  when the consumer compiles the generated source with their own `tsc`. */
 export function generateTs(manifest: Manifest, name = 'Bindings'): string {
+  const classNames = new Set(manifest.classes.map((c) => c.name));
+  // A function whose return type is a class name is a factory: its result is a
+  // handle the binding wraps into the matching proxy.
+  const factoryFns = manifest.functions.filter((f) => classNames.has(f.ret));
+  // Per-mode return type for a function: class returns become the proxy variant.
+  const fnRet = (f: FnSignature, mode: 'sync' | 'async'): string => {
+    if (classNames.has(f.ret)) {
+      const proxy = mode === 'async' ? `${f.ret}Async` : f.ret;
+      return mode === 'async' || f.isAsync ? `Promise<${proxy}>` : proxy;
+    }
+    return mode === 'async' ? asyncRet(f) : syncRet(f);
+  };
   const asyncMethods = manifest.functions
-    .map((f) => `  ${f.jsName}(${paramList(f)}): ${asyncRet(f)};`)
+    .map((f) => `  ${f.jsName}(${paramList(f)}): ${fnRet(f, 'async')};`)
     .join('\n');
   const syncMethods = manifest.functions
-    .map((f) => `  ${f.jsName}(${paramList(f)}): ${syncRet(f)};`)
+    .map((f) => `  ${f.jsName}(${paramList(f)}): ${fnRet(f, 'sync')};`)
     .join('\n');
-  const classDecls = manifest.classes.map((c) => generateClass(c, manifest)).join('\n\n');
-  const classProps = manifest.classes.map((c) => `  ${c.name}: typeof ${c.name};`).join('\n');
-  const classMap = manifest.classes.length
+  const syncClassDecls = manifest.classes.map((c) => generateClass(c, manifest, 'sync')).join('\n\n');
+  const asyncClassDecls = manifest.classes.map((c) => generateClass(c, manifest, 'async')).join('\n\n');
+  const classDecls = [syncClassDecls, asyncClassDecls].filter(Boolean).join('\n\n');
+  const syncClassProps = manifest.classes.map((c) => `  ${c.name}: typeof ${c.name};`).join('\n');
+  const asyncClassProps = manifest.classes.map((c) => `  ${c.name}: typeof ${c.name}Async;`).join('\n');
+  const syncClassMap = manifest.classes.length
     ? `{ ${manifest.classes.map((c) => `${c.name}`).join(', ')} } as unknown as Record<string, new (...a: unknown[]) => unknown>`
+    : '{}';
+  const asyncClassMap = manifest.classes.length
+    ? `{ ${manifest.classes.map((c) => `${c.name}: ${c.name}Async`).join(', ')} } as unknown as Record<string, { create(...a: unknown[]): Promise<unknown> }>`
+    : '{}';
+  const syncFactoryMap = factoryFns.length
+    ? `{ ${factoryFns.map((f) => `${f.jsName}: ${f.ret}`).join(', ')} } as unknown as Record<string, { __fromHandle(p: SyncProvider, h: unknown): unknown }>`
+    : '{}';
+  const asyncFactoryMap = factoryFns.length
+    ? `{ ${factoryFns.map((f) => `${f.jsName}: ${f.ret}Async`).join(', ')} } as unknown as Record<string, { __fromHandle(c: AsyncCaller, h: unknown): unknown }>`
     : '{}';
   return `// Generated from the Rust #[napi] manifest. Do not edit.
 import {
   createBinding,
   createSyncBinding,
   bindClasses,
+  bindClassesAsync,
+  type AsyncCaller,
   type ExternalObject,
   type Peer,
   type SyncProvider,
@@ -173,11 +199,12 @@ export type { ExternalObject };
 
 export interface ${name} {
 ${asyncMethods}
+${asyncClassProps}
 }
 
 export interface ${name}Sync {
 ${syncMethods}
-${classProps}
+${syncClassProps}
 }
 
 ${classDecls}
@@ -185,44 +212,76 @@ ${classDecls}
 const asyncFns: string[] = ${asyncFnsLiteral(manifest)};
 const externalFns: string[] = ${externalFnsLiteral(manifest)};
 
-export const bind = (peer: Peer): ${name} => createBinding<${name}>(peer, externalFns);
+export const bind = (peer: Peer): ${name} =>
+  bindClassesAsync(createBinding<${name}>(peer, externalFns), peer, ${asyncClassMap}, ${asyncFactoryMap});
 export const bindSync = (provider: SyncProvider): ${name}Sync =>
-  bindClasses(createSyncBinding<${name}Sync>(provider, asyncFns), provider, ${classMap});
+  bindClasses(createSyncBinding<${name}Sync>(provider, asyncFns), provider, ${syncClassMap}, ${syncFactoryMap});
 `;
 }
 
-/** TS class proxy: instances hold a provider-side handle; methods round-trip it. */
-function generateClass(c: ClassSignature, manifest: Manifest): string {
+/** TS class proxies: instances hold a provider-side handle; methods round-trip
+ *  it. Sync proxies block; async proxies return Promises and are constructed via
+ *  an awaited `create` factory (a ctor can't await). Class-typed returns wrap
+ *  into the matching proxy and are tracked for GC-driven slab release. */
+function generateClass(c: ClassSignature, manifest: Manifest, mode: 'sync' | 'async'): string {
   const classNames = new Set(manifest.classes.map((k) => k.name));
+  const suffix = mode === 'async' ? 'Async' : '';
+  const tn = (n: string) => (classNames.has(n) ? `${n}${suffix}` : n);
+  const ct = mode === 'async' ? 'AsyncCaller' : 'SyncProvider';
+  const name = `${c.name}${suffix}`;
   const ctor = c.methods.find((m) => m.jsName === 'constructor');
   const ctorParams = ctor ? paramList(ctor) : '';
   const ctorArgs = ctor ? ctor.paramNames.join(', ') : '';
   const members = c.methods
     .filter((m) => m.jsName !== 'constructor')
     .map((m) => {
-      const ret = m.isAsync ? `Promise<${m.ret}>` : m.ret;
-      const wrap = classNames.has(m.ret) ? `${m.ret}.__fromHandle(this.__provider, r)` : `r`;
+      const isClass = classNames.has(m.ret);
+      const wrapT = isClass ? tn(m.ret) : m.ret;
+      const ret = mode === 'async' || m.isAsync ? `Promise<${wrapT}>` : wrapT;
       const call = `this.__provider.call('${m.rustName}', [this.__handle${m.paramNames.length ? ', ' + m.paramNames.join(', ') : ''}])`;
-      const body = classNames.has(m.ret)
-        ? `const r = ${call} as ExternalObject; return ${wrap};`
+      if (mode === 'async') {
+        const body = isClass
+          ? `const r = (await ${call}) as ExternalObject; return ${tn(m.ret)}.__fromHandle(this.__provider, r);`
+          : `return (await ${call}) as ${wrapT};`;
+        if (m.isGetter) return `  get ${m.jsName}(): ${ret} { return (async () => { ${body} })(); }`;
+        return `  async ${m.jsName}(${paramList(m)}): ${ret} { ${body} }`;
+      }
+      const wrap = isClass ? `${tn(m.ret)}.__fromHandle(this.__provider, r)` : `r`;
+      const body = isClass
+        ? `const r = ${call} as ExternalObject; return ${m.isAsync ? `Promise.resolve(${wrap})` : wrap};`
         : `return ${call} as ${ret};`;
-      if (m.isGetter) return `  get ${m.jsName}(): ${m.ret} { ${body} }`;
+      if (m.isGetter) return `  get ${m.jsName}(): ${ret} { ${body} }`;
       return `  ${m.jsName}(${paramList(m)}): ${ret} { ${body} }`;
     })
     .join('\n');
-  return `export class ${c.name} {
+  const fromHandle = `  static __fromHandle(provider: ${ct}, handle: ExternalObject): ${name} {
+    const o = Object.create(${name}.prototype) as ${name};
+    (o as unknown as { __provider: ${ct} }).__provider = provider;
+    (o as unknown as { __handle: ExternalObject }).__handle = handle;
+    provider.trackExternal(handle);
+    return o;
+  }`;
+  if (mode === 'async') {
+    return `export class ${name} {
+  private __provider!: AsyncCaller;
+  private __handle!: ExternalObject;
+  static async create(${ctorParams}${ctor && ctorArgs ? ', ' : ''}__provider?: AsyncCaller): Promise<${name}> {
+    const h = (await (__provider as AsyncCaller).call('${ctor?.rustName ?? c.name + '.constructor'}', [${ctorArgs}])) as ExternalObject;
+    return ${name}.__fromHandle(__provider as AsyncCaller, h);
+  }
+${fromHandle}
+${members}
+}`;
+  }
+  return `export class ${name} {
   private __provider: SyncProvider;
   private __handle: ExternalObject;
   constructor(${ctorParams}${ctor && ctorArgs ? ', ' : ''}__provider?: SyncProvider) {
     this.__provider = __provider as SyncProvider;
     this.__handle = this.__provider.call('${ctor?.rustName ?? c.name + '.constructor'}', [${ctorArgs}]) as ExternalObject;
+    this.__provider.trackExternal(this.__handle);
   }
-  static __fromHandle(provider: SyncProvider, handle: ExternalObject): ${c.name} {
-    const o = Object.create(${c.name}.prototype) as ${c.name};
-    (o as unknown as { __provider: SyncProvider }).__provider = provider;
-    (o as unknown as { __handle: ExternalObject }).__handle = handle;
-    return o;
-  }
+${fromHandle}
 ${members}
 }`;
 }

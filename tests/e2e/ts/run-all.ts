@@ -41,6 +41,18 @@ async function exercise(peer: Peer) {
   const handle = await native.makeCounter(7);
   const counter = await native.readCounter(handle);
 
+  // Async class: factory create, async getter, async cross-method class return.
+  const obj = await native.Counter.create(5);
+  const afterAdd = await obj.addSlow(3);
+  const value = await obj.value;
+  const child = await obj.forkSlow(100);
+  const childValue = await child.value;
+  const parentUnchanged = await obj.value;
+
+  // Free-fn factory returning a class instance (the cross-class/factory path).
+  const made = await native.makeCounterClass(40);
+  const madeValue = await made.value;
+
   return {
     role: process.env[SOCKET_ENV] ? 'rust-parent' : 'node-parent',
     add,
@@ -53,6 +65,11 @@ async function exercise(peer: Peer) {
     reversed,
     big,
     counter,
+    afterAdd,
+    value,
+    childValue,
+    parentUnchanged,
+    madeValue,
   };
 }
 

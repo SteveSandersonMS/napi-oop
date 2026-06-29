@@ -42,3 +42,35 @@ export function createBinding<T extends object>(
     },
   });
 }
+
+/** Minimal call surface async class proxies need: invoke a fn (resolving with
+ *  its value) and register a returned handle for GC-driven slab release. */
+export interface AsyncCaller {
+  call(fn: string, args: unknown[]): Promise<unknown>;
+  trackExternal(value: unknown): void;
+}
+
+/** Async counterpart of `bindClasses`: each generated class is reached via an
+ *  awaited `create` factory, so we wrap them to inject the peer automatically.
+ *  Callers write `await native.Counter.create(5)`. Free functions that return a
+ *  class instance (`factories`) are wrapped to resolve the proxy too. */
+export function bindClassesAsync<T extends object>(
+  binding: T,
+  caller: AsyncCaller,
+  classes: Record<string, { create(...a: unknown[]): Promise<unknown> }>,
+  factories: Record<string, { __fromHandle(c: AsyncCaller, h: unknown): unknown }> = {}
+): T {
+  const bound: Record<string, unknown> = {};
+  for (const [name, Cls] of Object.entries(classes)) {
+    bound[name] = { create: (...args: unknown[]) => Cls.create(...args, caller) };
+  }
+  for (const [name, Cls] of Object.entries(factories)) {
+    const wireName = camelToSnake(name);
+    bound[name] = async (...args: unknown[]) =>
+      Cls.__fromHandle(caller, await caller.call(wireName, args));
+  }
+  return new Proxy(binding, {
+    get: (t, p) =>
+      typeof p === 'string' && p in bound ? bound[p] : (t as Record<PropertyKey, unknown>)[p],
+  });
+}

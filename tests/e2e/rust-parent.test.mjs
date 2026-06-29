@@ -20,4 +20,11 @@ test('rust-parent: every flow with Rust spawning Node', async () => {
   assert.deepEqual(r.reversed, [4, 3, 2, 1]);
   assert.equal(r.big, '42');
   assert.equal(r.counter, 7);
+
+  // Async class round-trips identically when Rust is the parent.
+  assert.equal(r.afterAdd, 8);
+  assert.equal(r.value, 8);
+  assert.equal(r.childValue, 108);
+  assert.equal(r.parentUnchanged, 8);
+  assert.equal(r.madeValue, 40);
 });
