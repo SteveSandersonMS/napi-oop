@@ -268,7 +268,10 @@ mod tests {
     fn maps_containers() {
         assert_eq!(rust_to_ts("Vec<i64>"), "Array<number>");
         assert_eq!(rust_to_ts("Option<String>"), "string | undefined | null");
-        assert_eq!(rust_to_ts("Vec<Option<u8>>"), "Array<number | undefined | null>");
+        assert_eq!(
+            rust_to_ts("Vec<Option<u8>>"),
+            "Array<number | undefined | null>"
+        );
     }
 
     #[test]
