@@ -38,4 +38,9 @@ test('node-parent: every flow over the real socket boundary', async () => {
   assert.equal(r.childValue, 108, 'forkSlow snapshots parent+by');
   assert.equal(r.parentUnchanged, 8, 'parent unaffected by child');
   assert.equal(r.madeValue, 40, 'free-fn factory returns a working class instance');
+
+  // A non-Clone/non-Serialize class minted by move: as a free-fn factory return
+  // and as a cross-class method return (a method on one class returning another).
+  assert.equal(r.tallyTotal, 11, 'free-fn factory mints a non-Clone class by move');
+  assert.equal(r.snapTotal, 8, 'cross-class method returns another class instance');
 });

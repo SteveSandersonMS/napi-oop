@@ -74,6 +74,13 @@ async function exercise(provider: SyncProvider) {
   const made = native.makeCounterClass(40);
   const madeValue = made.value;
 
+  // A non-Clone/non-Serialize class returned by a free fn (by-move mint)...
+  const tally = native.makeTally(11);
+  const tallyTotal = tally.total;
+  // ...and by a cross-class method (a method on Counter returning a Tally).
+  const snap = obj.snapshot();
+  const snapTotal = snap.total;
+
   return {
     role: process.env[SOCKET_ENV] ? 'rust-parent' : 'node-parent',
     add,
@@ -95,6 +102,8 @@ async function exercise(provider: SyncProvider) {
     childValue,
     parentUnchanged,
     madeValue,
+    tallyTotal,
+    snapTotal,
   };
 }
 

@@ -128,6 +128,7 @@ pub fn dispatch(request: Request, callbacks: &Arc<dyn Callbacks>) -> Message {
             // the worker thread without ever replying, leaving the caller hung.
             let before = crate::types::external_mint_count();
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _cb_scope = crate::tsfn::push_callbacks(Arc::clone(callbacks));
                 (registered.dispatch)(args, callbacks)
             }));
             let minted = crate::types::external_mint_count().saturating_sub(before);

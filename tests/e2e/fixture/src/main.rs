@@ -173,6 +173,13 @@ impl Counter {
         }
     }
 
+    /// A cross-class return: a method on one class returning a *different*
+    /// (non-`Clone`, non-`Serialize`) class. The return-encoder mints it by move.
+    #[napi]
+    pub fn snapshot(&self) -> Tally {
+        Tally { total: self.value }
+    }
+
     /// An async mutating method, returning the new value as a Promise.
     #[napi]
     pub async fn add_slow(&mut self, n: i32) -> i32 {
@@ -180,6 +187,29 @@ impl Counter {
         self.value += n;
         self.value
     }
+}
+
+/// A second `#[napi]` class that deliberately derives neither `Clone` nor
+/// `Serialize`: returning it exercises the encoder's by-move mint (it cannot copy
+/// or field-serialize the instance), covering free-fn and cross-class returns of
+/// a type with no extra trait support.
+#[napi]
+pub struct Tally {
+    total: i32,
+}
+
+#[napi]
+impl Tally {
+    #[napi(getter)]
+    pub fn total(&self) -> i32 {
+        self.total
+    }
+}
+
+/// A free-fn factory returning a non-`Clone` class instance.
+#[napi]
+pub fn make_tally(n: i32) -> Tally {
+    Tally { total: n }
 }
 
 fn main() {

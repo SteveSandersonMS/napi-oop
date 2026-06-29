@@ -69,19 +69,21 @@ pub struct Error {
 
 impl Error {
     /// Build an error from a human-readable reason, defaulting the status to
-    /// `GenericFailure` — the common napi-rs constructor.
-    pub fn from_reason<T: Into<String>>(reason: T) -> Self {
+    /// `GenericFailure` — the common napi-rs constructor. Accepts any
+    /// `ToString` value (matching napi-rs), so error types that implement only
+    /// `Display` — not `Into<String>` — can be passed directly.
+    pub fn from_reason<T: ToString>(reason: T) -> Self {
         Error {
             status: Status::GenericFailure,
-            reason: reason.into(),
+            reason: reason.to_string(),
         }
     }
 
     /// Build an error with an explicit status and reason.
-    pub fn new<T: Into<String>>(status: Status, reason: T) -> Self {
+    pub fn new<T: ToString>(status: Status, reason: T) -> Self {
         Error {
             status,
-            reason: reason.into(),
+            reason: reason.to_string(),
         }
     }
 }

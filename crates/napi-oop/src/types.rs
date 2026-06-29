@@ -219,6 +219,78 @@ pub fn with_object<T: 'static, R>(token: u64, f: impl FnOnce(&mut T) -> R) -> Op
     }
 }
 
+/// Marker trait the macro implements for every `#[napi]` class. It lets the
+/// return-encoder (below) recognise a class instance by type — without the macro
+/// having to know the full set of class names — so any fn returning a class (its
+/// own, *another* class, or a free-fn factory) mints the instance into the slab
+/// as an external handle rather than trying to serialize it. `Send + 'static`
+/// matches the slab's `Box<dyn Any + Send>` requirement.
+pub trait NapiClass: Send + 'static {}
+
+/// Owned return value awaiting wire encoding. Generated dispatch thunks wrap the
+/// (already Result-unwrapped) return in this and call `.napi_oop_encode()`; the
+/// two impls below dispatch on whether the type is a class.
+#[doc(hidden)]
+pub struct ReturnValue<T>(std::cell::RefCell<Option<T>>);
+
+impl<T> ReturnValue<T> {
+    pub fn new(value: T) -> Self {
+        ReturnValue(std::cell::RefCell::new(Some(value)))
+    }
+}
+
+/// Class returns: mint the owned instance into the slab and surface its token as
+/// an external handle. Implemented for `ReturnValue<T>` directly so this method
+/// wins (by autoref specialization) over the `Serialize` fallback below whenever
+/// `T: NapiClass`.
+#[doc(hidden)]
+pub trait EncodeClassReturn {
+    fn napi_oop_encode(&self) -> Result<rmpv::Value, String>;
+}
+
+impl<T: NapiClass> EncodeClassReturn for ReturnValue<T> {
+    fn napi_oop_encode(&self) -> Result<rmpv::Value, String> {
+        let value = self
+            .0
+            .borrow_mut()
+            .take()
+            .expect("ReturnValue encoded once");
+        Ok(crate::wire::external_marker(object_new(Box::new(value))))
+    }
+}
+
+/// Non-class returns: serialize by value onto the wire. Implemented for
+/// `&ReturnValue<T>`, one autoref further out than the class impl, so it is the
+/// lower-priority fallback chosen only when `T` is not a class.
+#[doc(hidden)]
+pub trait EncodeSerializeReturn {
+    fn napi_oop_encode(&self) -> Result<rmpv::Value, String>;
+}
+
+impl<T: Serialize> EncodeSerializeReturn for &ReturnValue<T> {
+    fn napi_oop_encode(&self) -> Result<rmpv::Value, String> {
+        let borrow = self.0.borrow();
+        let value = borrow.as_ref().expect("ReturnValue encoded once");
+        crate::wire::to_wire(value).map_err(|e| e.to_string())
+    }
+}
+
+/// Encode an owned (already Result-unwrapped) provider return for the wire,
+/// dispatching at compile time: class instances (`T: NapiClass`) mint into the
+/// slab as external handles; everything else serializes by value. The autoref on
+/// the receiver selects the class impl when applicable and the serialize impl
+/// otherwise.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __napi_oop_encode_return {
+    ($value:expr) => {{
+        #[allow(unused_imports)]
+        use $crate::types::{EncodeClassReturn as _, EncodeSerializeReturn as _};
+        let __napi_oop_rv = $crate::types::ReturnValue::new($value);
+        (&__napi_oop_rv).napi_oop_encode()
+    }};
+}
+
 /// Look up a live external by token and clone its `Arc<T>`. Used by the macro's
 /// `&External<T>` decode path to rebuild a handle pointing at the resident value.
 fn external_lookup<T: Send + Sync + 'static>(token: u64) -> Option<Arc<T>> {

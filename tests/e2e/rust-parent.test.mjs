@@ -31,4 +31,6 @@ test('rust-parent: every flow with Rust spawning Node', async () => {
   assert.equal(r.childValue, 108);
   assert.equal(r.parentUnchanged, 8);
   assert.equal(r.madeValue, 40);
+  assert.equal(r.tallyTotal, 11, 'free-fn factory mints a non-Clone class by move');
+  assert.equal(r.snapTotal, 8, 'cross-class method returns another class instance');
 });

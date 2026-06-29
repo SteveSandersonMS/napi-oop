@@ -49,15 +49,20 @@ mod out_of_proc {
     pub(super) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
         // `#[napi(object)]` marks a plain value struct that crosses the boundary
         // by serde; everything else dispatches on the item kind.
-        let is_object = attr
-            .to_string()
+        let attr_str = attr.to_string();
+        let is_object = attr_str
             .split(|c: char| !c.is_alphanumeric())
             .any(|t| t == "object");
+        let is_string_enum = attr_str.contains("string_enum");
         let parsed = parse_macro_input!(item as Item);
         match parsed {
             Item::Fn(func) => expand_fn(func),
             Item::Impl(imp) => expand_impl(imp),
             Item::Struct(s) if is_object => expand_object(s),
+            // `#[napi(string_enum)]`: carried by serde as a string. Inject the
+            // missing (de)serialization derives. Plain (int) `#[napi]` enums keep
+            // napi-rs's numeric repr and pass through untouched.
+            Item::Enum(e) if is_string_enum => expand_enum(e),
             other => quote!(#other).into(),
         }
     }
@@ -66,24 +71,77 @@ mod out_of_proc {
     /// serde derives (camelCase fields, matching napi-rs's JS field naming) so the
     /// struct round-trips over the wire, and register its field shape so the TS
     /// generator emits a matching `interface` instead of `unknown`.
-    fn expand_object(item: ItemStruct) -> TokenStream {
+    fn expand_object(mut item: ItemStruct) -> TokenStream {
         let name = item.ident.to_string();
+
+        // Per field: strip napi-rs's `#[napi(..)]` (a non-existent attribute in
+        // this build) and translate `js_name = "x"` into the equivalent serde
+        // rename so the wire field name still matches what JS expects.
         let mut field_names = Vec::new();
         let mut field_types = Vec::new();
-        for field in &item.fields {
-            let Some(ident) = &field.ident else { continue };
-            field_names.push(ident.to_string());
-            let ty = &field.ty;
-            field_types.push(
-                quote!(#ty)
-                    .to_string()
-                    .split_whitespace()
-                    .collect::<String>(),
-            );
+        if let syn::Fields::Named(fields) = &mut item.fields {
+            for field in &mut fields.named {
+                let Some(ident) = field.ident.clone() else {
+                    continue;
+                };
+                field_names.push(ident.to_string());
+                let ty = &field.ty;
+                field_types.push(
+                    quote!(#ty)
+                        .to_string()
+                        .split_whitespace()
+                        .collect::<String>(),
+                );
+
+                let mut field_has_serde_rename = false;
+                for attr in &field.attrs {
+                    if attr.path().is_ident("serde") {
+                        let _ = attr.parse_nested_meta(|meta| {
+                            if meta.path.is_ident("rename") {
+                                field_has_serde_rename = true;
+                            }
+                            if meta.input.peek(syn::Token![=]) {
+                                let value = meta.value()?;
+                                let _: syn::Expr = value.parse()?;
+                            }
+                            Ok(())
+                        });
+                    }
+                }
+
+                let mut js_name: Option<String> = None;
+                field.attrs.retain(|attr| {
+                    if attr.path().is_ident("napi") {
+                        let _ = attr.parse_nested_meta(|meta| {
+                            if meta.path.is_ident("js_name") {
+                                let value = meta.value()?;
+                                let lit: syn::LitStr = value.parse()?;
+                                js_name = Some(lit.value());
+                            } else if meta.input.peek(syn::Token![=]) {
+                                let value = meta.value()?;
+                                let _: syn::Expr = value.parse()?;
+                            }
+                            Ok(())
+                        });
+                        false
+                    } else {
+                        true
+                    }
+                });
+                if let Some(rename) = js_name {
+                    if !field_has_serde_rename {
+                        field.attrs.push(syn::parse_quote!(#[serde(rename = #rename)]));
+                    }
+                }
+            }
         }
+
+        // Carry the value over the wire with serde: inject whatever derives /
+        // container attributes the struct doesn't already declare (camelCase
+        // field naming, matching napi-rs).
+        inject_serde(&mut item.attrs, true);
+
         let expanded = quote! {
-            #[derive(::napi_oop::serde::Serialize, ::napi_oop::serde::Deserialize)]
-            #[serde(crate = "::napi_oop::serde", rename_all = "camelCase")]
             #item
 
             const _: () = {
@@ -97,6 +155,90 @@ mod out_of_proc {
             };
         };
         expanded.into()
+    }
+
+    /// A `#[napi(string_enum)]` (or other `#[napi]`) enum: a plain value carried
+    /// by serde as a string. napi-rs derives its own (de)serialization; we inject
+    /// whatever serde derives are missing so it round-trips. Variant-level
+    /// `#[napi(..)]` attributes are stripped (not real attributes in this build),
+    /// and `rename_all` is left to the source (its `string_enum = "…"` case maps
+    /// to a matching `#[serde(rename_all = "…")]`), defaulting to verbatim variant
+    /// names like napi-rs.
+    fn expand_enum(mut item: syn::ItemEnum) -> TokenStream {
+        for variant in &mut item.variants {
+            variant.attrs.retain(|attr| !attr.path().is_ident("napi"));
+        }
+        inject_serde(&mut item.attrs, false);
+        quote! { #item }.into()
+    }
+
+    /// Inspect a type's existing container attributes and append whichever serde
+    /// derives / container attributes are missing so it round-trips over the wire.
+    /// Duplicating a `derive(Serialize)` or `serde(rename_all = …)` the source
+    /// already declares would be a hard error, so each is added only if absent.
+    /// `default_rename_all` injects `rename_all = "camelCase"` when the type has
+    /// none (correct for objects; enums keep serde's verbatim default to match
+    /// napi-rs string-enum naming).
+    fn inject_serde(attrs: &mut Vec<syn::Attribute>, default_rename_all: bool) {
+        let mut has_serialize = false;
+        let mut has_deserialize = false;
+        let mut has_rename_all = false;
+        let mut has_serde_crate = false;
+        for attr in attrs.iter() {
+            if attr.path().is_ident("derive") {
+                let _ = attr.parse_nested_meta(|meta| {
+                    // Match the last path segment so qualified derives such as
+                    // `serde::Serialize` count too.
+                    let last = meta.path.segments.last().map(|s| s.ident.to_string());
+                    if last.as_deref() == Some("Serialize") {
+                        has_serialize = true;
+                    }
+                    if last.as_deref() == Some("Deserialize") {
+                        has_deserialize = true;
+                    }
+                    Ok(())
+                });
+            } else if attr.path().is_ident("serde") {
+                let _ = attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("rename_all") {
+                        has_rename_all = true;
+                    }
+                    if meta.path.is_ident("crate") {
+                        has_serde_crate = true;
+                    }
+                    if meta.input.peek(syn::Token![=]) {
+                        let value = meta.value()?;
+                        let _: syn::Expr = value.parse()?;
+                    }
+                    Ok(())
+                });
+            }
+        }
+
+        let mut derives = Vec::new();
+        if !has_serialize {
+            derives.push(quote!(::napi_oop::serde::Serialize));
+        }
+        if !has_deserialize {
+            derives.push(quote!(::napi_oop::serde::Deserialize));
+        }
+        let mut serde_args = Vec::new();
+        if !has_serde_crate {
+            serde_args.push(quote!(crate = "::napi_oop::serde"));
+        }
+        if default_rename_all && !has_rename_all {
+            serde_args.push(quote!(rename_all = "camelCase"));
+        }
+        // Append (rather than prepend) the injected attributes so any derive the
+        // type already carries precedes the serde helper attribute — emitting
+        // `#[serde(..)]` before the `#[derive(Serialize)]` that introduces it is
+        // a "derive helper attribute used before it is introduced" error.
+        if !derives.is_empty() {
+            attrs.push(syn::parse_quote!(#[derive(#(#derives),*)]));
+        }
+        if !serde_args.is_empty() {
+            attrs.push(syn::parse_quote!(#[serde(#(#serde_args),*)]));
+        }
     }
 
     fn expand_fn(func: ItemFn) -> TokenStream {
@@ -129,51 +271,18 @@ mod out_of_proc {
 
         let arity = arg_types.len();
         let arg_idents: Vec<_> = (0..arity).map(|i| format_ident!("__arg{i}")).collect();
-        let decode_args = arg_idents.iter().zip(arg_types.iter()).map(|(ident, ty)| {
-            if let Some((inputs, _output)) = fn_trait_sig(ty) {
-                // `impl Fn(..)` sugar: fire-and-forget closure firing at the peer.
-                let cb_args: Vec<_> = (0..inputs.len()).map(|i| format_ident!("__c{i}")).collect();
-                quote! {
-                    let #ident = {
-                        let __h = ::napi_oop::wire::callback_handle(&__iter.next().unwrap())
-                            .map_err(|e| ::std::string::ToString::to_string(&e))?;
-                        let __cbh = ::napi_oop::tsfn::CallbackHandle::new(__h, ::std::sync::Arc::clone(__cb));
-                        move |#(#cb_args: #inputs),*| {
-                            __cbh.invoke(::std::vec![
-                                #(::napi_oop::wire::to_wire(&#cb_args).unwrap()),*
-                            ]);
-                        }
-                    };
-                }
-            } else if tsfn_inner(ty).is_some() {
-                // Explicit `ThreadsafeFunction<T>`: decode the handle, hand it the
-                // shared sink so it can be stored and fired after the call.
-                quote! {
-                    let #ident = {
-                        let __h = ::napi_oop::wire::callback_handle(&__iter.next().unwrap())
-                            .map_err(|e| ::std::string::ToString::to_string(&e))?;
-                        ::napi_oop::ThreadsafeFunction::__new(__h, ::std::sync::Arc::clone(__cb))
-                    };
-                }
-            } else if let Some(owned) = external_ref_inner(ty) {
-                // `&External<T>`: decode the owned handle (slab lookup) and bind it;
-                // the call site borrows it.
-                quote! {
-                    let #ident: #owned = ::napi_oop::wire::from_wire(__iter.next().unwrap())
-                        .map_err(|e| ::std::string::ToString::to_string(&e))?;
-                }
-            } else {
-                quote! {
-                    let #ident: #ty = ::napi_oop::wire::from_wire(__iter.next().unwrap())
-                        .map_err(|e| ::std::string::ToString::to_string(&e))?;
-                }
-            }
-        });
+        // Host-injected params (`Env`) carry no JS argument: they are bound to a
+        // synthetic value, excluded from the wire arity, and omitted from the
+        // manifest's parameter list.
+        let wire_arity = arg_types.iter().filter(|ty| !is_env_ty(ty)).count();
+        let decode_args = arg_idents.iter().zip(arg_types.iter()).map(decode_arg);
 
         // Stringify each Rust type for the manifest the TS generator consumes;
-        // callback params (both forms) become a TS function-type string.
+        // callback params (both forms) become a TS function-type string. Env
+        // params are skipped so the surfaced signature matches the JS call.
         let param_type_strs: Vec<String> = arg_types
             .iter()
+            .filter(|ty| !is_env_ty(ty))
             .map(|ty| {
                 if let Some((inputs, _)) = fn_trait_sig(ty) {
                     ts_fn_type(&inputs)
@@ -183,6 +292,12 @@ mod out_of_proc {
                     quote!(#ty).to_string().split_whitespace().collect()
                 }
             })
+            .collect();
+        let arg_names: Vec<String> = arg_names
+            .iter()
+            .zip(arg_types.iter())
+            .filter(|(_, ty)| !is_env_ty(ty))
+            .map(|(n, _)| n.clone())
             .collect();
         let ret_ok_type = result_ok_type(&func.sig.output);
         let ret_type_str: String = match (&ret_ok_type, &func.sig.output) {
@@ -209,23 +324,9 @@ mod out_of_proc {
         };
 
         // A `Result<T, E>` Err maps to an error reply (mirroring napi-rs's throw);
-        // a plain return is always success. The Ok value / plain value is encoded.
-        let encode_ret = if ret_ok_type.is_some() {
-            quote! {
-                match __ret {
-                    ::core::result::Result::Ok(__v) => ::napi_oop::wire::to_wire(&__v)
-                        .map_err(|e| ::std::string::ToString::to_string(&e)),
-                    ::core::result::Result::Err(__e) => {
-                        ::core::result::Result::Err(::std::string::ToString::to_string(&__e))
-                    }
-                }
-            }
-        } else {
-            quote! {
-                ::napi_oop::wire::to_wire(&__ret)
-                    .map_err(|e| ::std::string::ToString::to_string(&e))
-            }
-        };
+        // a plain return is always success. The Ok value / plain value is encoded
+        // by the return-encoder, which mints class instances and serializes the rest.
+        let encode_ret = encode_owned(&ret_ok_type);
 
         let expanded = quote! {
             #func
@@ -235,11 +336,11 @@ mod out_of_proc {
                     __args: ::std::vec::Vec<::napi_oop::rmpv::Value>,
                     __cb: &::std::sync::Arc<dyn ::napi_oop::registry::Callbacks>,
                 ) -> ::core::result::Result<::napi_oop::rmpv::Value, ::std::string::String> {
-                    if __args.len() != #arity {
+                    if __args.len() != #wire_arity {
                         return ::core::result::Result::Err(::std::format!(
                             "{} expected {} argument(s), got {}",
                             #fn_name_str,
-                            #arity,
+                            #wire_arity,
                             __args.len(),
                         ));
                     }
@@ -310,22 +411,16 @@ mod out_of_proc {
                 m.attrs.retain(|a| !a.path().is_ident("napi"));
             }
         }
-        // A class instance serializes by minting a slab token, so a fn (free or
-        // method) returning the class surfaces as an external handle uniformly.
-        // Requires `Clone` (a finite by-value mint of an instance with no GC
-        // double-free); instance methods mint directly to avoid relocking.
-        let serialize_impl = quote! {
-            impl ::napi_oop::serde::Serialize for #self_ty {
-                fn serialize<__S: ::napi_oop::serde::Serializer>(&self, __s: __S) -> ::core::result::Result<__S::Ok, __S::Error> {
-                    use ::napi_oop::serde::ser::SerializeMap;
-                    let __tok = ::napi_oop::types::object_new(::std::boxed::Box::new(::std::clone::Clone::clone(self)));
-                    let mut __m = __s.serialize_map(::core::option::Option::Some(1))?;
-                    __m.serialize_entry(::napi_oop::types::EXTERNAL_KEY, &__tok)?;
-                    __m.end()
-                }
-            }
+        // A class instance crosses the wire as an external handle: any fn returning
+        // a class (its own, another class, or a free-fn factory) mints the owned
+        // instance into the slab via the return-encoder. Marking the type
+        // `NapiClass` is what lets that encoder recognise it by type — no `Clone`
+        // or `Serialize` on the class is required, since the instance is moved
+        // (never copied or field-serialized) into the slab.
+        let class_marker = quote! {
+            impl ::napi_oop::types::NapiClass for #self_ty {}
         };
-        quote! { #clean #serialize_impl #(#thunks)* }.into()
+        quote! { #clean #class_marker #(#thunks)* }.into()
     }
 
     /// Build the dispatch thunk + registration for one constructor/method/getter.
@@ -364,7 +459,18 @@ mod out_of_proc {
             .zip(arg_types.iter())
             .map(|(id, ty)| call_arg_token(id, ty))
             .collect();
-        let param_strs: Vec<String> = arg_types.iter().map(ts_param).collect();
+        // Env params are host-injected: omit them from the manifest signature.
+        let param_strs: Vec<String> = arg_types
+            .iter()
+            .filter(|ty| !is_env_ty(ty))
+            .map(|ty| ts_param(ty))
+            .collect();
+        let arg_names: Vec<String> = arg_names
+            .iter()
+            .zip(arg_types.iter())
+            .filter(|(_, ty)| !is_env_ty(ty))
+            .map(|(n, _)| n.clone())
+            .collect();
         let is_async = method.sig.asyncness.is_some();
         let ret_ok = result_ok_type(&method.sig.output);
         let ret_str: String = match (&ret_ok, &method.sig.output) {
@@ -376,8 +482,7 @@ mod out_of_proc {
         };
 
         let mut ret_label = ret_str.clone();
-        let ret_is_class = ret_str == class || ret_str == "Self";
-        if ret_is_class {
+        if ret_str == "Self" {
             ret_label = class.to_string();
         }
         // Receiver count: a constructor has none; methods take handle first.
@@ -407,34 +512,16 @@ mod out_of_proc {
             } else {
                 quote!(__self.#m_ident2(#(#call_args),*))
             };
-            if ret_is_class {
-                // Mint the returned instance AFTER releasing the slab lock; minting
-                // inside `with_object` would re-enter the slab mutex and deadlock.
-                let unwrap = if ret_ok.is_some() {
-                    quote!(match __r {
-                        Ok(v) => v,
-                        Err(e) => return Err(::std::string::ToString::to_string(&e)),
-                    })
-                } else {
-                    quote!(__r)
-                };
-                quote! {
-                    let mut __iter = __args.into_iter();
-                    let __tok = ::napi_oop::wire::external_handle(&__iter.next().ok_or("missing receiver handle")?)?;
-                    #(#decode)*
-                    let __r = ::napi_oop::types::with_object::<#self_ty,_>(__tok, |__self| #call).ok_or("object handle no longer live")?;
-                    let __obj = #unwrap;
-                    let __new = ::napi_oop::types::object_new(::std::boxed::Box::new(__obj));
-                    ::core::result::Result::Ok(::napi_oop::wire::external_marker(__new))
-                }
-            } else {
-                let encode = encode_ret(&ret_ok);
-                quote! {
-                    let mut __iter = __args.into_iter();
-                    let __tok = ::napi_oop::wire::external_handle(&__iter.next().ok_or("missing receiver handle")?)?;
-                    #(#decode)*
-                    ::napi_oop::types::with_object::<#self_ty,_>(__tok, |__self| { let __ret = #call; #encode }).ok_or("object handle no longer live")?
-                }
+            // Move the owned return out of `with_object` first, then encode: the
+            // encoder may mint into the slab (for class returns), which would
+            // re-enter the slab mutex and deadlock if done inside the closure.
+            let encode = encode_owned(&ret_ok);
+            quote! {
+                let mut __iter = __args.into_iter();
+                let __tok = ::napi_oop::wire::external_handle(&__iter.next().ok_or("missing receiver handle")?)?;
+                #(#decode)*
+                let __ret = ::napi_oop::types::with_object::<#self_ty,_>(__tok, |__self| #call).ok_or("object handle no longer live")?;
+                #encode
             }
         } else {
             // associated fn (static) — treat like a free fn
@@ -443,7 +530,7 @@ mod out_of_proc {
             } else {
                 quote!(#self_ty::#m_ident2(#(#call_args),*))
             };
-            let encode = method_encode(&ret_ok, ret_is_class);
+            let encode = encode_owned(&ret_ok);
             quote! { let mut __iter = __args.into_iter(); #(#decode)* let __ret = #call; #encode }
         };
 
@@ -474,24 +561,20 @@ mod out_of_proc {
         out
     }
 
-    fn encode_ret(ret_ok: &Option<syn::Type>) -> proc_macro2::TokenStream {
+    /// Encode an owned provider return (`__ret`) for the wire. A `Result` is
+    /// unwrapped — `Err` becomes an error reply (mirroring napi-rs's throw) — and
+    /// the success value is handed to the return-encoder, which mints class
+    /// instances into the slab as external handles and serializes everything else.
+    fn encode_owned(ret_ok: &Option<syn::Type>) -> proc_macro2::TokenStream {
         if ret_ok.is_some() {
-            quote! { match __ret { Ok(v)=>::napi_oop::wire::to_wire(&v).map_err(|e| ::std::string::ToString::to_string(&e)), Err(e)=>Err(::std::string::ToString::to_string(&e)) } }
+            quote! {
+                match __ret {
+                    ::core::result::Result::Ok(__v) => ::napi_oop::__napi_oop_encode_return!(__v),
+                    ::core::result::Result::Err(__e) => ::core::result::Result::Err(::std::string::ToString::to_string(&__e)),
+                }
+            }
         } else {
-            quote! { ::napi_oop::wire::to_wire(&__ret).map_err(|e| ::std::string::ToString::to_string(&e)) }
-        }
-    }
-
-    /// Encode a method/static return. When the return is a class instance it is
-    /// minted into the object slab and surfaced as an external handle token.
-    fn method_encode(ret_ok: &Option<syn::Type>, ret_is_class: bool) -> proc_macro2::TokenStream {
-        if !ret_is_class {
-            return encode_ret(ret_ok);
-        }
-        if ret_ok.is_some() {
-            quote! { match __ret { Ok(v)=>{ let __tok = ::napi_oop::types::object_new(::std::boxed::Box::new(v)); Ok(::napi_oop::wire::external_marker(__tok)) }, Err(e)=>Err(::std::string::ToString::to_string(&e)) } }
-        } else {
-            quote! { { let __tok = ::napi_oop::types::object_new(::std::boxed::Box::new(__ret)); Ok(::napi_oop::wire::external_marker(__tok)) } }
+            quote! { ::napi_oop::__napi_oop_encode_return!(__ret) }
         }
     }
 
@@ -506,6 +589,14 @@ mod out_of_proc {
     }
 
     fn decode_arg((ident, ty): (&syn::Ident, &syn::Type)) -> proc_macro2::TokenStream {
+        if is_env_ty(ty) {
+            // napi-rs injects `Env` from the host; it is not a JS argument, so
+            // bind a synthetic value and consume no wire arg.
+            if matches!(ty, syn::Type::Reference(r) if r.mutability.is_some()) {
+                return quote! { let mut #ident = ::napi_oop::Env; };
+            }
+            return quote! { let #ident = ::napi_oop::Env; };
+        }
         if let Some((inputs, _)) = fn_trait_sig(ty) {
             let cb: Vec<_> = (0..inputs.len()).map(|i| format_ident!("__c{i}")).collect();
             quote! { let #ident = { let __h = ::napi_oop::wire::callback_handle(&__iter.next().unwrap()).map_err(|e| ::std::string::ToString::to_string(&e))?; let __cbh = ::napi_oop::tsfn::CallbackHandle::new(__h, ::std::sync::Arc::clone(__cb)); move |#(#cb: #inputs),*| { __cbh.invoke(::std::vec![#(::napi_oop::wire::to_wire(&#cb).unwrap()),*]); } }; }
@@ -562,11 +653,37 @@ mod out_of_proc {
         }
     }
 
+    /// True if `ty` is napi's `Env` in any form (`Env`, `&Env`, `&mut Env`).
+    /// Such a parameter is host-injected in napi-rs (no JS argument), so the
+    /// dispatch thunk binds a synthetic `Env` rather than decoding from the wire,
+    /// and it is omitted from the manifest's parameter list.
+    fn is_env_ty(ty: &syn::Type) -> bool {
+        let inner = match ty {
+            syn::Type::Reference(r) => &*r.elem,
+            other => other,
+        };
+        if let syn::Type::Path(p) = inner {
+            if let Some(seg) = p.path.segments.last() {
+                return seg.ident == "Env";
+            }
+        }
+        false
+    }
+
     /// The token used to pass a decoded arg at the call site: by reference for
-    /// `&External<T>` params (decoded by value), otherwise the value directly.
+    /// `&External<T>` params (decoded by value) and for `&Env`/`&mut Env`
+    /// (synthesised by value), otherwise the value directly.
     fn call_arg_token(ident: &syn::Ident, ty: &syn::Type) -> proc_macro2::TokenStream {
         if external_ref_inner(ty).is_some() {
             quote!(&#ident)
+        } else if is_env_ty(ty) {
+            if matches!(ty, syn::Type::Reference(r) if r.mutability.is_some()) {
+                quote!(&mut #ident)
+            } else if matches!(ty, syn::Type::Reference(_)) {
+                quote!(&#ident)
+            } else {
+                quote!(#ident)
+            }
         } else {
             quote!(#ident)
         }
