@@ -88,13 +88,35 @@ pub fn registered_names() -> Vec<String> {
 pub fn dispatch(request: Request, callbacks: &Arc<dyn Callbacks>) -> Message {
     let Request { id, function, args } = request;
     match lookup(&function) {
-        Some(registered) => match (registered.dispatch)(args, callbacks) {
-            Ok(result) => Message::Response(Response { id, result }),
-            Err(message) => Message::Error(ErrorMsg { id, message }),
-        },
+        Some(registered) => {
+            // Guard against a function panicking: an unwind would otherwise kill
+            // the worker thread without ever replying, leaving the caller hung.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                (registered.dispatch)(args, callbacks)
+            }));
+            match outcome {
+                Ok(Ok(result)) => Message::Response(Response { id, result }),
+                Ok(Err(message)) => Message::Error(ErrorMsg { id, message }),
+                Err(panic) => Message::Error(ErrorMsg {
+                    id,
+                    message: format!("function '{function}' panicked: {}", panic_message(&panic)),
+                }),
+            }
+        }
         None => Message::Error(ErrorMsg {
             id,
             message: format!("unknown function: {function}"),
         }),
+    }
+}
+
+/// Best-effort extraction of a panic's message payload.
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "panic".to_string()
     }
 }

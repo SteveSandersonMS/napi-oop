@@ -36,6 +36,13 @@ pub async fn slow_double(n: i32) -> i32 {
     n * 2
 }
 
+/// Panics on purpose: the dispatcher must catch the unwind and reply with an
+/// error rather than letting the worker thread die and hang the caller.
+#[napi]
+pub fn boom(_n: i32) -> i32 {
+    panic!("kaboom");
+}
+
 /// A callback param: the macro decodes a handle marker and builds a closure that
 /// fires through the `Callbacks` table. Sums values, notifying each step.
 #[napi]
@@ -128,6 +135,17 @@ fn arity_mismatch_is_an_error() {
 fn bad_argument_type_is_an_error() {
     match call("add_numbers", 6, vec![Value::from("notnum"), Value::from(2i64)]) {
         Message::Error(e) => assert_eq!(e.id, 6),
+        other => panic!("expected error, got {other:?}"),
+    }
+}
+
+#[test]
+fn panic_in_function_is_an_error_not_a_hang() {
+    match call("boom", 8, vec![Value::from(1i64)]) {
+        Message::Error(e) => {
+            assert_eq!(e.id, 8);
+            assert!(e.message.contains("panicked"), "got: {}", e.message);
+        }
         other => panic!("expected error, got {other:?}"),
     }
 }
