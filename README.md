@@ -7,9 +7,11 @@ using the `napi::…` path — only a cargo feature picks the mode.
 
 > Status: both modes work end to end. **Out-of-process** has a **symmetric
 > bootstrap** — either Node or Rust may be the parent that spawns the other.
-> Node calls `#[napi]` functions through one binding that mirrors native: sync
-> Rust fns block for their value (`addNumbers(2, 3) === 5`) while `async` ones
-> surface as non-blocking `Promise<T>`. Rust can invoke JS callbacks
+> Node calls `#[napi]` functions **and classes** through one binding that mirrors
+> native: sync Rust fns block for their value (`addNumbers(2, 3) === 5`) while
+> `async` ones surface as non-blocking `Promise<T>`. Rust can expose stateful
+> classes (constructor / methods / getters), pass value structs, `Buffer`,
+> `BigInt` and opaque `External` handles, and invoke JS callbacks
 > (`ThreadsafeFunction`). **In-process** builds an ordinary native addon via
 > `@napi-rs/cli`. See the examples.
 
@@ -109,6 +111,25 @@ accept either an `impl Fn(..)` parameter or an explicit `ThreadsafeFunction<T>`,
 and the runtime routes invocations back over the socket. Callbacks fired during a
 blocking sync call are drained before the call returns; those fired while the main
 thread is idle arrive on the event loop.
+
+### Classes & value types
+
+The surface mirrors napi-rs beyond free functions. A `#[napi]` struct with an
+`impl` block becomes a JS class: `#[napi(constructor)]`, instance methods,
+`#[napi(getter)]` accessors, and per-item `#[napi(js_name = "…")]` renames all
+remoting to the provider, which owns the live Rust instance. Data crosses the
+socket as the same types napi-rs supports — `#[napi(object)]` value structs,
+`Buffer`, `BigInt`, `Option<T>`/trailing optionals, `Vec<T>` — plus opaque
+`External<T>` handles that stay in the provider and travel by reference. The
+generated `bindings.ts` types classes and value structs alongside functions.
+
+### Process lifecycle
+
+The two processes mirror an in-process addon: native code never disappears
+mid-call. The parent (either side) spawns the child with the socket path; the
+provider serves until the socket reaches EOF, then exits — so the Node side owns
+graceful shutdown and the provider follows. napi-oop deliberately leaves *which*
+side is the parent, signal handling, and process exit to the application.
 
 
 
