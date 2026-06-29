@@ -22,13 +22,12 @@ async function main(): Promise<void> {
     const product = await native.multiplySlow(6, 7);
     console.log(`[node-parent:sync] await multiplySlow(6, 7) = ${product}`);
 
-    // Callbacks can't work while the main thread is blocked; sync mode rejects
-    // them with a clear error rather than silently dropping them.
-    try {
-      native.sumEach([10, 20, 30], (running) => running);
-    } catch (err) {
-      console.log(`[node-parent:sync] sumEach with callback threw: ${(err as Error).message}`);
-    }
+    // Callbacks now work under sync bindings: the main thread registers each
+    // handle and fires queued invocations between blocking calls. The total
+    // returns synchronously; the per-step callbacks are delivered fire-and-forget.
+    const steps: number[] = [];
+    const total = native.sumEach([10, 20, 30], (running) => steps.push(running)) as number;
+    console.log(`[node-parent:sync] sumEach => ${total}, steps=[${steps.join(', ')}]`);
   } finally {
     provider.close();
   }

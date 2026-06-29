@@ -19,8 +19,10 @@ pollster = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
 
 [features]
-# Drive provider `async fn`s on a shared multi-thread tokio runtime, so tokio
-# timers/IO work. Without it, `block_on` uses pollster (no reactor).
+# Tokio is on by default: the target workloads are async/tokio, so block_on
+# uses a shared multi-thread runtime (timers/IO work). Disable default features
+# to fall back to pollster (no reactor) for purely CPU-bound `.await`s.
+default = ["tokio"]
 tokio = ["dep:tokio"]
 
 [dev-dependencies]

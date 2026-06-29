@@ -91,12 +91,14 @@ export declare function bindSync(provider: SyncProvider): ${name}Sync;
 }
 
 /** Render the `.js`: thin factories over the runtime's bindings. */
-export function generateJs(): string {
+export function generateJs(manifest: Manifest): string {
   return `// Generated from the Rust #[napi] manifest. Do not edit.
 const { createBinding, createSyncBinding } = require('@napi-oop/runtime');
 
+const asyncFns = ${asyncFnsLiteral(manifest)};
+
 exports.bind = (peer) => createBinding(peer);
-exports.bindSync = (provider) => createSyncBinding(provider);
+exports.bindSync = (provider) => createSyncBinding(provider, asyncFns);
 `;
 }
 
