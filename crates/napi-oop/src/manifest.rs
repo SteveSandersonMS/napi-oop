@@ -14,7 +14,7 @@
 
 use serde::Serialize;
 
-use crate::registry::{RegisteredFn, RegisteredMethod, RegisteredObject};
+use crate::registry::{RegisteredClassRename, RegisteredFn, RegisteredMethod, RegisteredObject};
 
 /// One function's signature, with TypeScript types already mapped. The JS name is
 /// the camelCase form napi-rs would expose.
@@ -78,13 +78,13 @@ pub struct Manifest {
 /// Map a (whitespace-stripped) Rust type to its TypeScript equivalent. Falls back
 /// to `unknown` for types not yet modelled (generalized in the type-system phase).
 pub fn rust_to_ts(rust: &str) -> String {
-    rust_to_ts_with(rust, &std::collections::HashSet::new())
+    rust_to_ts_with(rust, &std::collections::HashMap::new())
 }
 
 /// As [`rust_to_ts`], but `known` names (class proxies and `#[napi(object)]`
-/// interfaces) pass through verbatim instead of degrading to `unknown`, so a
+/// interfaces) map to their TS names instead of degrading to `unknown`, so a
 /// struct/class used as a param, return, or container element keeps its TS type.
-pub fn rust_to_ts_with(rust: &str, known: &std::collections::HashSet<String>) -> String {
+pub fn rust_to_ts_with(rust: &str, known: &std::collections::HashMap<String, String>) -> String {
     // A by-reference param (`&External<T>`, `&str`) maps identically to its
     // owned form on the wire, so drop a leading `&` (and `mut`) before mapping.
     let rust = rust
@@ -95,8 +95,8 @@ pub fn rust_to_ts_with(rust: &str, known: &std::collections::HashSet<String>) ->
     // `napi_oop::External<i32>` -> `External<i32>`) so `#[napi]` source compiles
     // regardless of how the type was imported.
     let rust = strip_outer_path(rust);
-    if known.contains(rust) {
-        return rust.to_string();
+    if let Some(ts_name) = known.get(rust) {
+        return ts_name.clone();
     }
     match rust {
         "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "f32" | "f64" | "i64" | "u64" | "usize"
@@ -107,7 +107,7 @@ pub fn rust_to_ts_with(rust: &str, known: &std::collections::HashSet<String>) ->
         "Buffer" => "Uint8Array".to_string(),
         "BigInt" => "bigint".to_string(),
         other => {
-            if let Some(ts) = fn_type_to_ts(other) {
+            if let Some(ts) = fn_type_to_ts(other, known) {
                 ts
             } else if let Some(inner) = strip_generic(other, "Vec") {
                 format!("Array<{}>", rust_to_ts_with(inner, known))
@@ -143,7 +143,7 @@ fn strip_outer_path(ty: &str) -> &str {
 
 /// Map a callback param the macro encoded as `(a0:i32,a1:i32)=>i32` into a TS
 /// function type, mapping each param/return Rust type. `None` if not a fn type.
-fn fn_type_to_ts(ty: &str) -> Option<String> {
+fn fn_type_to_ts(ty: &str, known: &std::collections::HashMap<String, String>) -> Option<String> {
     let (params, ret) = ty.strip_prefix('(')?.split_once(")=>")?;
     let mapped: Vec<String> = if params.is_empty() {
         Vec::new()
@@ -152,11 +152,15 @@ fn fn_type_to_ts(ty: &str) -> Option<String> {
             .split(',')
             .map(|p| {
                 let (name, t) = p.split_once(':').unwrap_or(("a", p));
-                format!("{name}:{}", rust_to_ts(t))
+                format!("{name}:{}", rust_to_ts_with(t, known))
             })
             .collect()
     };
-    Some(format!("({})=>{}", mapped.join(","), rust_to_ts(ret)))
+    Some(format!(
+        "({})=>{}",
+        mapped.join(","),
+        rust_to_ts_with(ret, known)
+    ))
 }
 
 /// Convert a snake_case Rust name to camelCase, mirroring napi-rs.
@@ -182,12 +186,27 @@ pub fn manifest() -> Manifest {
         .into_iter()
         .map(|m| m.class)
         .collect();
-    // Names that map to a TS type verbatim (class proxies + object interfaces),
+    let class_renames: std::collections::HashMap<String, String> =
+        inventory::iter::<RegisteredClassRename>
+            .into_iter()
+            .map(|r| (r.rust_name.to_string(), r.js_name.to_string()))
+            .collect();
+    // Rust names that map to TS type names (class proxies + object interfaces),
     // so they survive param/return/container mapping instead of becoming `unknown`.
-    let mut known: std::collections::HashSet<String> =
-        class_names.iter().map(|n| n.to_string()).collect();
+    let mut known: std::collections::HashMap<String, String> = class_names
+        .iter()
+        .map(|n| {
+            (
+                n.to_string(),
+                class_renames
+                    .get(*n)
+                    .cloned()
+                    .unwrap_or_else(|| n.to_string()),
+            )
+        })
+        .collect();
     for o in inventory::iter::<RegisteredObject> {
-        known.insert(o.name.to_string());
+        known.insert(o.name.to_string(), o.name.to_string());
     }
     let functions = inventory::iter::<RegisteredFn>
         .into_iter()
@@ -209,7 +228,7 @@ pub fn manifest() -> Manifest {
             is_async: f.is_async,
         })
         .collect();
-    let mut classes: Vec<ClassSignature> = Vec::new();
+    let mut classes: Vec<(String, ClassSignature)> = Vec::new();
     for m in inventory::iter::<RegisteredMethod> {
         let method = MethodSignature {
             js_name: m.method.to_string(),
@@ -224,14 +243,24 @@ pub fn manifest() -> Manifest {
             is_async: m.is_async,
             is_getter: m.is_getter,
         };
-        match classes.iter_mut().find(|c| c.name == m.class) {
-            Some(c) => c.methods.push(method),
-            None => classes.push(ClassSignature {
-                name: m.class.to_string(),
-                methods: vec![method],
-            }),
+        match classes
+            .iter_mut()
+            .find(|(rust_name, _)| rust_name == m.class)
+        {
+            Some((_, c)) => c.methods.push(method),
+            None => classes.push((
+                m.class.to_string(),
+                ClassSignature {
+                    name: known
+                        .get(m.class)
+                        .cloned()
+                        .unwrap_or_else(|| m.class.to_string()),
+                    methods: vec![method],
+                },
+            )),
         }
     }
+    let classes = classes.into_iter().map(|(_, c)| c).collect();
     let objects = inventory::iter::<RegisteredObject>
         .into_iter()
         .map(|o| ObjectSignature {
@@ -259,6 +288,40 @@ pub fn manifest_json() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::{RegisteredClassRename, RegisteredMethod};
+
+    inventory::submit! {
+        RegisteredClassRename {
+            rust_name: "ManifestRustBox",
+            js_name: "RenamedManifestBox",
+        }
+    }
+
+    inventory::submit! {
+        RegisteredMethod {
+            class: "ManifestRustBox",
+            method: "constructor",
+            rust_name: "ManifestRustBox.new",
+            params: &["i32"],
+            param_names: &["start_value"],
+            ret: "ManifestRustBox",
+            is_async: false,
+            is_getter: false,
+        }
+    }
+
+    inventory::submit! {
+        RegisteredMethod {
+            class: "ManifestRustBox",
+            method: "cloneBox",
+            rust_name: "ManifestRustBox.clone_box",
+            params: &["Vec<ManifestRustBox>"],
+            param_names: &["others"],
+            ret: "ManifestRustBox",
+            is_async: false,
+            is_getter: false,
+        }
+    }
 
     #[test]
     fn maps_primitives() {
@@ -287,5 +350,36 @@ mod tests {
     fn snake_to_camel_matches_napi() {
         assert_eq!(snake_to_camel("add_numbers"), "addNumbers");
         assert_eq!(snake_to_camel("x"), "x");
+    }
+
+    #[test]
+    fn manifest_applies_class_js_name_without_changing_method_wire_names() {
+        let manifest = manifest();
+        let class = manifest
+            .classes
+            .iter()
+            .find(|c| c.name == "RenamedManifestBox")
+            .expect("renamed class is surfaced under its JS name");
+
+        assert!(!manifest.classes.iter().any(|c| c.name == "ManifestRustBox"));
+
+        let ctor = class
+            .methods
+            .iter()
+            .find(|m| m.js_name == "constructor")
+            .expect("constructor method is present");
+        assert_eq!(ctor.rust_name, "ManifestRustBox.new");
+        assert_eq!(ctor.params, vec!["number"]);
+        assert_eq!(ctor.param_names, vec!["startValue"]);
+        assert_eq!(ctor.ret, "RenamedManifestBox");
+
+        let clone_box = class
+            .methods
+            .iter()
+            .find(|m| m.js_name == "cloneBox")
+            .expect("regular method is present");
+        assert_eq!(clone_box.rust_name, "ManifestRustBox.clone_box");
+        assert_eq!(clone_box.params, vec!["Array<RenamedManifestBox>"]);
+        assert_eq!(clone_box.ret, "RenamedManifestBox");
     }
 }

@@ -54,11 +54,13 @@ mod out_of_proc {
             .split(|c: char| !c.is_alphanumeric())
             .any(|t| t == "object");
         let is_string_enum = attr_str.contains("string_enum");
+        let js_name = js_name_from_tokens(attr);
         let parsed = parse_macro_input!(item as Item);
         match parsed {
-            Item::Fn(func) => expand_fn(func, js_name_from_tokens(attr)),
+            Item::Fn(func) => expand_fn(func, js_name),
             Item::Impl(imp) => expand_impl(imp),
             Item::Struct(s) if is_object => expand_object(s),
+            Item::Struct(s) => expand_class_struct(s, js_name),
             // `#[napi(string_enum)]`: carried by serde as a string. Inject the
             // missing (de)serialization derives. Plain (int) `#[napi]` enums keep
             // napi-rs's numeric repr and pass through untouched.
@@ -200,6 +202,26 @@ mod out_of_proc {
             };
         };
         expanded.into()
+    }
+
+    fn expand_class_struct(item: ItemStruct, js_name: Option<String>) -> TokenStream {
+        let Some(js_name) = js_name else {
+            return quote!(#item).into();
+        };
+        let rust_name = item.ident.to_string();
+        quote! {
+            #item
+
+            const _: () = {
+                ::napi_oop::inventory::submit! {
+                    ::napi_oop::registry::RegisteredClassRename {
+                        rust_name: #rust_name,
+                        js_name: #js_name,
+                    }
+                }
+            };
+        }
+        .into()
     }
 
     /// A `#[napi(string_enum)]` (or other `#[napi]`) enum: a plain value carried

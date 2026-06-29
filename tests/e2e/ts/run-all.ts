@@ -86,6 +86,16 @@ async function exercise(provider: SyncProvider) {
   const snap = obj.snapshot();
   const snapTotal = snap.total;
 
+  // Class-level js_name divergence: TS sees RenamedBox, but provider dispatch
+  // stays on BertBox.* wire names. Exercise ctor, method return, and factory
+  // wrapping through the JS-facing class name.
+  const renamed = new native.RenamedBox(12);
+  const renamedAfterBump = renamed.bump(5);
+  const renamedChild = renamed.duplicate();
+  const renamedChildValue = renamedChild.value;
+  const renamedMade = native.makeBertBox(30);
+  const renamedMadeAfterBump = renamedMade.bump(2);
+
   // js_name divergence: a free fn (`bertShout`) and a method (`bertReset`) whose
   // JS names are deliberately not the camelCase of their Rust names (`shout`,
   // `reset`). They must be dispatched by the manifest's `rust_name`, not by
@@ -118,6 +128,9 @@ async function exercise(provider: SyncProvider) {
     madeValue,
     tallyTotal,
     snapTotal,
+    renamedAfterBump,
+    renamedChildValue,
+    renamedMadeAfterBump,
     shout,
     reset,
   };

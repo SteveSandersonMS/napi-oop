@@ -238,6 +238,44 @@ pub fn make_tally(n: i32) -> Tally {
     Tally { total: n }
 }
 
+/// A class whose JS-facing name differs from its Rust type name. Dispatch still
+/// uses `BertBox.*` wire names, while the manifest/codegen surface `RenamedBox`.
+#[napi(js_name = "RenamedBox")]
+pub struct BertBox {
+    value: i32,
+}
+
+#[napi]
+impl BertBox {
+    #[napi(constructor)]
+    pub fn new(value: i32) -> Self {
+        Self { value }
+    }
+
+    #[napi]
+    pub fn bump(&mut self, by: i32) -> i32 {
+        self.value += by;
+        self.value
+    }
+
+    #[napi(getter)]
+    pub fn value(&self) -> i32 {
+        self.value
+    }
+
+    #[napi]
+    pub fn duplicate(&self) -> Self {
+        Self { value: self.value }
+    }
+}
+
+/// A free-fn factory returning the renamed class, exercising return type mapping
+/// and factory wrapping under the JS-facing class name.
+#[napi]
+pub fn make_bert_box(value: i32) -> BertBox {
+    BertBox { value }
+}
+
 fn main() {
     let mut argv = std::env::args().skip(1);
     let first = argv.next();

@@ -85,6 +85,16 @@ pub struct RegisteredMethod {
 
 inventory::collect!(RegisteredMethod);
 
+/// A JS-facing class rename declared on the class struct with
+/// `#[napi(js_name = "…")]`. Method dispatch remains keyed by the Rust class
+/// name; this only affects manifest/type names surfaced to TypeScript.
+pub struct RegisteredClassRename {
+    pub rust_name: &'static str,
+    pub js_name: &'static str,
+}
+
+inventory::collect!(RegisteredClassRename);
+
 /// One `#[napi(object)]` struct: a plain value type that crosses the boundary by
 /// serde (camelCase fields, matching napi-rs). Carries the field shape so the TS
 /// generator can emit a matching `interface`, rather than falling back to
