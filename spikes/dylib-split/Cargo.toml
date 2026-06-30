@@ -10,7 +10,7 @@
 # package size flat while supporting both hosting models from one set of bits.
 [workspace]
 resolver = "2"
-members = ["core", "node-addon", "provider"]
+members = ["core", "core-dyn", "node-addon", "provider"]
 
 [profile.release]
 # Keep symbols so CI diagnostics (otool -L / ldd / objdump) are legible.

@@ -1,0 +1,16 @@
+[package]
+name = "spike-core-dyn"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "spike_core_dyn"
+# The shared dynamic boundary. `core` (rlib) is statically linked INTO this
+# dylib, so the business logic exists exactly once here; both wrappers then link
+# this dylib dynamically and share that single copy. Built on every target
+# except musl, which does not support the Rust `dylib` crate type.
+crate-type = ["dylib"]
+
+[dependencies]
+spike-core = { path = "../core" }

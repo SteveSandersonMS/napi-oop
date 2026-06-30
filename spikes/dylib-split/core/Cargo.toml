@@ -6,6 +6,8 @@ publish = false
 
 [lib]
 name = "spike_core"
-# A Rust `dylib` (not `cdylib`): the wrappers link it via the native Rust ABI,
-# so rich Rust types cross the boundary with no C shim and no serialization.
-crate-type = ["dylib"]
+# Plain rlib: the business logic source of truth. On dynamic-linking targets it
+# is wrapped by `core-dyn` (a dylib) so its code lives once and is shared; on
+# musl (which cannot produce a Rust dylib) the wrappers link this rlib directly
+# and statically.
+crate-type = ["rlib"]

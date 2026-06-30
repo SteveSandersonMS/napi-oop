@@ -10,9 +10,17 @@ name = "spike_node_addon"
 crate-type = ["cdylib"]
 
 [dependencies]
-spike-core = { path = "../core" }
 napi = { version = "2", default-features = false, features = ["napi4"] }
 napi-derive = "2"
+
+# On dynamic targets link the shared core dylib; on musl link the core rlib
+# statically. Two distinct dependency names (each a single canonical path),
+# aliased to `shared` in source via cfg.
+[target.'cfg(not(target_env = "musl"))'.dependencies]
+spike-core-dyn = { path = "../core-dyn" }
+
+[target.'cfg(target_env = "musl")'.dependencies]
+spike-core = { path = "../core" }
 
 [build-dependencies]
 napi-build = "2"

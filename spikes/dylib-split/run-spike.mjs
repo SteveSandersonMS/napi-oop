@@ -1,19 +1,20 @@
 // Orchestrates the dylib-split spike end to end, cross-platform.
 //
-// Steps:
-//   1. Build the spike workspace with `-C prefer-dynamic` (+ rpath link args)
-//      so every artifact shares ONE dynamically-linked std.
-//   2. Stage core dylib + the toolchain's dynamic std + the .node + provider bin
-//      into a clean dist/ directory (the "shipped" layout).
-//   3. On macOS, rewrite install names / rpaths so siblings resolve via
-//      @loader_path, then ad-hoc re-sign.
-//   4. Run the provider exe and `node require('./index.node')` from a FOREIGN cwd
-//      with library-path env vars CLEARED, proving the bits are self-contained.
+// Two layouts depending on the target:
+//   * shared-dylib (Windows/macOS/glibc-Linux): build with `-C prefer-dynamic`
+//     so every artifact shares ONE dynamically-linked std; ship the shared core
+//     dylib + that std + a thin .node + a thin provider binary.
+//   * musl-static: musl cannot produce a Rust dylib, so statically link the core
+//     into each wrapper and ship just a self-contained .node + provider binary
+//     (size duplication on this platform only).
 //
-// Exits non-zero on the first failure so CI fails loudly.
+// Steps: build -> stage a clean dist/ -> (macOS) fix install names / rpaths and
+// ad-hoc re-sign -> run the provider exe and `node require('./index.node')` from
+// a FOREIGN cwd with library-path env vars CLEARED, proving the bits are
+// self-contained. Exits non-zero on the first failure so CI fails loudly.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, copyFileSync, readdirSync, renameSync, existsSync } from "node:fs";
+import { mkdirSync, rmSync, copyFileSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir, platform } from "node:os";
@@ -24,11 +25,15 @@ const DIST = join(HERE, "dist");
 const OS = platform(); // 'win32' | 'darwin' | 'linux'
 
 // musl ships no dynamic libstd, so the Rust `dylib` crate type is unsupported
-// there. Detect it so we can report that as a known limitation, not a crash.
+// there. On musl we fall back to statically linking the business logic into each
+// wrapper (one self-contained .node and one self-contained provider binary,
+// accepting size duplication on that platform only). Everywhere else we use the
+// shared-dylib layout (one shared core + one shared std).
 const IS_MUSL =
   OS === "linux" &&
   (existsSync("/etc/alpine-release") ||
     !process.report?.getReport?.()?.header?.glibcVersionRuntime);
+const SHARED = !IS_MUSL; // shared core dylib + dynamic std, vs musl static
 
 function log(section) {
   console.log(`\n=== ${section} ===`);
@@ -84,28 +89,37 @@ function findStdLib() {
 
 // --- 1. build --------------------------------------------------------------
 
-log(`BUILD (os=${OS})`);
+log(`BUILD (os=${OS}, mode=${SHARED ? "shared-dylib" : "musl-static"})`);
 
-let rustflags = "-C prefer-dynamic";
-if (OS === "linux") rustflags += " -C link-arg=-Wl,-rpath,$ORIGIN -C link-arg=-Wl,--enable-new-dtags";
-if (OS === "darwin") rustflags += " -C link-arg=-Wl,-rpath,@loader_path";
+// In shared mode every artifact dynamically links one std (prefer-dynamic) and
+// resolves siblings via rpath. In musl-static mode we link everything
+// statically, so no prefer-dynamic and no rpath are needed.
+let rustflags = "";
+if (SHARED) {
+  rustflags = "-C prefer-dynamic";
+  if (OS === "linux") rustflags += " -C link-arg=-Wl,-rpath,$ORIGIN -C link-arg=-Wl,--enable-new-dtags";
+  if (OS === "darwin") rustflags += " -C link-arg=-Wl,-rpath,@loader_path";
+}
 
+// Build only the two wrappers. This pulls in their per-target `shared`
+// dependency (the core dylib on dynamic targets, the core rlib on musl) and
+// avoids building the dylib-only `core-dyn` crate on musl, where it cannot exist.
 const buildEnv = { ...process.env, RUSTFLAGS: rustflags, RUSTC_WRAPPER: "" };
-const build = run("cargo", ["build", "--release", "--manifest-path", join(HERE, "Cargo.toml")], {
-  env: buildEnv,
-});
+const build = run(
+  "cargo",
+  [
+    "build",
+    "--release",
+    "-p",
+    "spike-node-addon",
+    "-p",
+    "spike-provider",
+    "--manifest-path",
+    join(HERE, "Cargo.toml"),
+  ],
+  { env: buildEnv }
+);
 if (build.status !== 0) {
-  if (IS_MUSL) {
-    log("KNOWN LIMITATION (musl)");
-    console.log(
-      "The musl target does not support the Rust `dylib` crate type (it ships no\n" +
-        "dynamic libstd), so the shared-core-dylib layout cannot be produced here.\n" +
-        "On musl the core would instead have to be a `cdylib` with an explicit C ABI,\n" +
-        "or be statically linked into each wrapper (accepting size duplication on this\n" +
-        "platform only). Treating this as an expected, documented limitation."
-    );
-    process.exit(0);
-  }
   console.error(`cargo build failed (exit ${build.status})`);
   process.exit(1);
 }
@@ -116,28 +130,32 @@ log("STAGE");
 rmSync(DIST, { recursive: true, force: true });
 mkdirSync(DIST, { recursive: true });
 
-const coreSrc = join(TARGET, dylibName("spike_core"));
 const addonSrc = join(TARGET, dylibName("spike_node_addon"));
 const provSrc = join(TARGET, OS === "win32" ? "spike-provider.exe" : "spike-provider");
-const stdSrc = findStdLib();
 
-const coreDst = join(DIST, basename(coreSrc));
 const addonDst = join(DIST, "index.node");
 const provDst = join(DIST, OS === "win32" ? "spike-provider.exe" : "spike-provider");
-const stdDst = join(DIST, basename(stdSrc));
 
-for (const [src, dst] of [
-  [coreSrc, coreDst],
+const staging = [
   [addonSrc, addonDst],
   [provSrc, provDst],
-  [stdSrc, stdDst],
-]) {
+];
+
+// In shared mode we also ship the one core dylib and the one dynamic std.
+let coreDst = null;
+let stdDst = null;
+if (SHARED) {
+  const coreSrc = join(TARGET, dylibName("spike_core_dyn"));
+  const stdSrc = findStdLib();
+  coreDst = join(DIST, basename(coreSrc));
+  stdDst = join(DIST, basename(stdSrc));
+  staging.push([coreSrc, coreDst], [stdSrc, stdDst]);
+}
+
+for (const [src, dst] of staging) {
   copyFileSync(src, dst);
   console.log(`staged ${basename(src)} -> ${dst}`);
 }
-
-// On Windows, copy the import .lib too (not needed at runtime, harmless).
-// macOS executables/dylibs must stay +x; copyFileSync preserves mode on unix.
 
 // --- 3. macOS install-name / rpath fixups + ad-hoc signing ----------------
 
@@ -150,7 +168,7 @@ function machoDeps(file) {
     .filter(Boolean);
 }
 
-if (OS === "darwin") {
+if (OS === "darwin" && SHARED) {
   log("MACOS FIXUPS");
   const coreBase = basename(coreDst);
   const stdBase = basename(stdDst);
@@ -188,10 +206,11 @@ log("DIST CONTENTS");
 for (const f of readdirSync(DIST)) console.log("  " + f);
 
 log("LINKAGE DIAGNOSTICS");
+const inspectTargets = SHARED ? [coreDst, addonDst, provDst] : [addonDst, provDst];
 if (OS === "linux") {
-  for (const f of [coreDst, addonDst, provDst]) run("ldd", [f]);
+  for (const f of inspectTargets) run("ldd", [f]);
 } else if (OS === "darwin") {
-  for (const f of [coreDst, addonDst, provDst]) run("otool", ["-L", f]);
+  for (const f of inspectTargets) run("otool", ["-L", f]);
 }
 
 // --- 4. run with a foreign cwd and cleared library-path env ---------------

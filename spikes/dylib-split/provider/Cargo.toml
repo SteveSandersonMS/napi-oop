@@ -8,5 +8,8 @@ publish = false
 name = "spike-provider"
 path = "src/main.rs"
 
-[dependencies]
+[target.'cfg(not(target_env = "musl"))'.dependencies]
+spike-core-dyn = { path = "../core-dyn" }
+
+[target.'cfg(target_env = "musl")'.dependencies]
 spike-core = { path = "../core" }
