@@ -92,13 +92,17 @@ function findStdLib() {
 log(`BUILD (os=${OS}, mode=${SHARED ? "shared-dylib" : "musl-static"})`);
 
 // In shared mode every artifact dynamically links one std (prefer-dynamic) and
-// resolves siblings via rpath. In musl-static mode we link everything
-// statically, so no prefer-dynamic and no rpath are needed.
+// resolves siblings via rpath. In musl-static mode we link std + core
+// statically; we must disable the default `crt-static` so the musl target can
+// emit a cdylib (.node) and a normally-linked executable at all (they still link
+// only the system musl libc, exactly like glibc binaries link system glibc).
 let rustflags = "";
 if (SHARED) {
   rustflags = "-C prefer-dynamic";
   if (OS === "linux") rustflags += " -C link-arg=-Wl,-rpath,$ORIGIN -C link-arg=-Wl,--enable-new-dtags";
   if (OS === "darwin") rustflags += " -C link-arg=-Wl,-rpath,@loader_path";
+} else {
+  rustflags = "-C target-feature=-crt-static";
 }
 
 // Build only the two wrappers. This pulls in their per-target `shared`
