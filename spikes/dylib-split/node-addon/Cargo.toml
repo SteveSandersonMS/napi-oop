@@ -1,0 +1,18 @@
+[package]
+name = "spike-node-addon"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "spike_node_addon"
+# cdylib so Node can dlopen it (renamed to .node by the orchestrator).
+crate-type = ["cdylib"]
+
+[dependencies]
+spike-core = { path = "../core" }
+napi = { version = "2", default-features = false, features = ["napi4"] }
+napi-derive = "2"
+
+[build-dependencies]
+napi-build = "2"

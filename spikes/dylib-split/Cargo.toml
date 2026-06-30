@@ -1,0 +1,17 @@
+# Standalone spike workspace (excluded from the root workspace).
+#
+# Goal: prove that shared business logic can be compiled ONCE into a dynamic
+# library ("core") and linked by TWO thin wrappers that ship side by side:
+#   - a Node-API addon (cdylib, renamed to .node) loaded in-process by Node, and
+#   - a standalone provider executable used when a native host is the entrypoint.
+#
+# Both wrappers call into the same core via the native Rust ABI (no C ABI, no
+# serialization) because they are built together with one toolchain. This keeps
+# package size flat while supporting both hosting models from one set of bits.
+[workspace]
+resolver = "2"
+members = ["core", "node-addon", "provider"]
+
+[profile.release]
+# Keep symbols so CI diagnostics (otool -L / ldd / objdump) are legible.
+strip = "none"

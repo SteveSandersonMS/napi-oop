@@ -1,0 +1,209 @@
+// Orchestrates the dylib-split spike end to end, cross-platform.
+//
+// Steps:
+//   1. Build the spike workspace with `-C prefer-dynamic` (+ rpath link args)
+//      so every artifact shares ONE dynamically-linked std.
+//   2. Stage core dylib + the toolchain's dynamic std + the .node + provider bin
+//      into a clean dist/ directory (the "shipped" layout).
+//   3. On macOS, rewrite install names / rpaths so siblings resolve via
+//      @loader_path, then ad-hoc re-sign.
+//   4. Run the provider exe and `node require('./index.node')` from a FOREIGN cwd
+//      with library-path env vars CLEARED, proving the bits are self-contained.
+//
+// Exits non-zero on the first failure so CI fails loudly.
+
+import { spawnSync } from "node:child_process";
+import { mkdirSync, rmSync, copyFileSync, readdirSync, renameSync } from "node:fs";
+import { join, dirname, basename } from "node:path";
+import { fileURLToPath } from "node:url";
+import { tmpdir, platform } from "node:os";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const TARGET = join(HERE, "target", "release");
+const DIST = join(HERE, "dist");
+const OS = platform(); // 'win32' | 'darwin' | 'linux'
+
+function log(section) {
+  console.log(`\n=== ${section} ===`);
+}
+
+function run(cmd, args, opts = {}) {
+  console.log(`$ ${cmd} ${args.join(" ")}`);
+  const r = spawnSync(cmd, args, { encoding: "utf8", ...opts });
+  if (r.stdout) console.log(r.stdout.trimEnd());
+  if (r.stderr) console.log(r.stderr.trimEnd());
+  return r;
+}
+
+function must(cmd, args, opts = {}) {
+  const r = run(cmd, args, opts);
+  if (r.status !== 0) {
+    console.error(`FAILED (exit ${r.status}): ${cmd} ${args.join(" ")}`);
+    process.exit(1);
+  }
+  return r;
+}
+
+// --- platform-specific artifact + std library names -----------------------
+
+function dylibName(libName) {
+  if (OS === "win32") return `${libName}.dll`;
+  if (OS === "darwin") return `lib${libName}.dylib`;
+  return `lib${libName}.so`;
+}
+
+function findStdLib() {
+  const sysroot = must("rustc", ["--print", "sysroot"]).stdout.trim();
+  const dir = OS === "win32" ? join(sysroot, "bin") : join(sysroot, "lib");
+  const ext = OS === "win32" ? ".dll" : OS === "darwin" ? ".dylib" : ".so";
+  const prefix = OS === "win32" ? "std-" : "libstd-";
+  const hit = readdirSync(dir).find((f) => f.startsWith(prefix) && f.endsWith(ext));
+  if (!hit) {
+    console.error(`Could not find dynamic std (${prefix}*${ext}) in ${dir}`);
+    console.error(`Dir contents: ${readdirSync(dir).join(", ")}`);
+    process.exit(1);
+  }
+  return join(dir, hit);
+}
+
+// --- 1. build --------------------------------------------------------------
+
+log(`BUILD (os=${OS})`);
+
+let rustflags = "-C prefer-dynamic";
+if (OS === "linux") rustflags += " -C link-arg=-Wl,-rpath,$ORIGIN -C link-arg=-Wl,--enable-new-dtags";
+if (OS === "darwin") rustflags += " -C link-arg=-Wl,-rpath,@loader_path";
+
+const buildEnv = { ...process.env, RUSTFLAGS: rustflags, RUSTC_WRAPPER: "" };
+must("cargo", ["build", "--release", "--manifest-path", join(HERE, "Cargo.toml")], {
+  env: buildEnv,
+});
+
+// --- 2. stage --------------------------------------------------------------
+
+log("STAGE");
+rmSync(DIST, { recursive: true, force: true });
+mkdirSync(DIST, { recursive: true });
+
+const coreSrc = join(TARGET, dylibName("spike_core"));
+const addonSrc = join(TARGET, dylibName("spike_node_addon"));
+const provSrc = join(TARGET, OS === "win32" ? "spike-provider.exe" : "spike-provider");
+const stdSrc = findStdLib();
+
+const coreDst = join(DIST, basename(coreSrc));
+const addonDst = join(DIST, "index.node");
+const provDst = join(DIST, OS === "win32" ? "spike-provider.exe" : "spike-provider");
+const stdDst = join(DIST, basename(stdSrc));
+
+for (const [src, dst] of [
+  [coreSrc, coreDst],
+  [addonSrc, addonDst],
+  [provSrc, provDst],
+  [stdSrc, stdDst],
+]) {
+  copyFileSync(src, dst);
+  console.log(`staged ${basename(src)} -> ${dst}`);
+}
+
+// On Windows, copy the import .lib too (not needed at runtime, harmless).
+// macOS executables/dylibs must stay +x; copyFileSync preserves mode on unix.
+
+// --- 3. macOS install-name / rpath fixups + ad-hoc signing ----------------
+
+function machoDeps(file) {
+  const r = run("otool", ["-L", file]);
+  return (r.stdout || "")
+    .split("\n")
+    .slice(1) // first line is the filename
+    .map((l) => l.trim().split(" ")[0])
+    .filter(Boolean);
+}
+
+if (OS === "darwin") {
+  log("MACOS FIXUPS");
+  const coreBase = basename(coreDst);
+  const stdBase = basename(stdDst);
+  const rewriteTargets = new Set([coreBase, stdBase]);
+
+  // Give the shared libs @rpath-relative ids.
+  must("install_name_tool", ["-id", `@rpath/${coreBase}`, coreDst]);
+  must("install_name_tool", ["-id", `@rpath/${stdBase}`, stdDst]);
+
+  // Point every dependent's references to those libs at @rpath, and ensure each
+  // has an @loader_path rpath so @rpath resolves to its own directory.
+  for (const file of [coreDst, addonDst, provDst, stdDst]) {
+    for (const dep of machoDeps(file)) {
+      const b = basename(dep);
+      if (rewriteTargets.has(b) && dep !== `@rpath/${b}`) {
+        run("install_name_tool", ["-change", dep, `@rpath/${b}`, file]);
+      }
+    }
+    // add_rpath fails if already present; ignore its error.
+    run("install_name_tool", ["-add_rpath", "@loader_path", file]);
+  }
+
+  log("MACOS otool -L (post-fixup)");
+  for (const file of [coreDst, addonDst, provDst]) machoDeps(file);
+
+  log("MACOS ad-hoc codesign");
+  for (const file of [coreDst, stdDst, addonDst, provDst]) {
+    run("codesign", ["--force", "--sign", "-", file]);
+  }
+}
+
+// --- diagnostics -----------------------------------------------------------
+
+log("DIST CONTENTS");
+for (const f of readdirSync(DIST)) console.log("  " + f);
+
+log("LINKAGE DIAGNOSTICS");
+if (OS === "linux") {
+  for (const f of [coreDst, addonDst, provDst]) run("ldd", [f]);
+} else if (OS === "darwin") {
+  for (const f of [coreDst, addonDst, provDst]) run("otool", ["-L", f]);
+}
+
+// --- 4. run with a foreign cwd and cleared library-path env ---------------
+
+const cleanEnv = { ...process.env };
+delete cleanEnv.LD_LIBRARY_PATH;
+delete cleanEnv.DYLD_LIBRARY_PATH;
+delete cleanEnv.DYLD_FALLBACK_LIBRARY_PATH;
+const foreignCwd = tmpdir();
+
+log("RUN provider (out-of-process host)");
+const prov = run(provDst, [], { cwd: foreignCwd, env: cleanEnv });
+if (prov.status !== 0) {
+  console.error(`provider exited ${prov.status}`);
+  process.exit(1);
+}
+const provOut = prov.stdout || "";
+assertIncludes("provider", provOut, ["add=5", "reverse=[3, 2, 1]", "greeting=hello, provider"]);
+
+log("RUN node addon (in-process host)");
+const nodeScript = `
+const addon = require(${JSON.stringify(addonDst)});
+console.log("add=" + addon.add(40, 2));
+const r = addon.reverseBytes([1, 2, 3]);
+console.log("reverse=" + JSON.stringify(Array.from(r)));
+console.log("greeting=" + addon.greeting("node"));
+`;
+const node = run(process.execPath, ["-e", nodeScript], { cwd: foreignCwd, env: cleanEnv });
+if (node.status !== 0) {
+  console.error(`node exited ${node.status}`);
+  process.exit(1);
+}
+assertIncludes("node", node.stdout || "", ["add=42", "reverse=[3,2,1]", "greeting=hello, node"]);
+
+log("SPIKE PASSED");
+
+function assertIncludes(who, out, needles) {
+  for (const n of needles) {
+    if (!out.includes(n)) {
+      console.error(`ASSERT FAILED (${who}): expected output to include ${JSON.stringify(n)}`);
+      console.error(`actual:\n${out}`);
+      process.exit(1);
+    }
+  }
+  console.log(`${who} output OK (${needles.join(", ")})`);
+}

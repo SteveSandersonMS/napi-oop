@@ -1,0 +1,12 @@
+[package]
+name = "spike-provider"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "spike-provider"
+path = "src/main.rs"
+
+[dependencies]
+spike-core = { path = "../core" }

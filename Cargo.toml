@@ -10,6 +10,7 @@ members = [
 ]
 exclude = [
     "examples/native-add",
+    "spikes/dylib-split",
 ]
 
 [workspace.package]

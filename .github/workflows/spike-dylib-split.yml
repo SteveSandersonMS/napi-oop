@@ -1,0 +1,46 @@
+name: spike-dylib-split
+
+# Throwaway spike: validate that shared business logic compiled once into a
+# Rust `dylib` can be linked by both a Node-API addon and a standalone provider
+# binary, shipped side by side, on every target platform. Not part of the
+# product build; runs only on this branch / on demand.
+
+on:
+  push:
+    branches: ["spike/dylib-split"]
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Show toolchain
+        run: |
+          rustc -V
+          node -v
+      - name: Run spike
+        run: node spikes/dylib-split/run-spike.mjs
+
+  musl:
+    name: linux-musl (alpine)
+    runs-on: ubuntu-latest
+    container: rust:alpine
+    steps:
+      - name: Install deps
+        run: apk add --no-cache nodejs npm build-base git
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: |
+          rustc -V
+          node -v
+      - name: Run spike
+        run: node spikes/dylib-split/run-spike.mjs

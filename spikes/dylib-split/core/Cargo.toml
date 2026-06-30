@@ -1,0 +1,11 @@
+[package]
+name = "spike-core"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "spike_core"
+# A Rust `dylib` (not `cdylib`): the wrappers link it via the native Rust ABI,
+# so rich Rust types cross the boundary with no C shim and no serialization.
+crate-type = ["dylib"]
