@@ -10,7 +10,7 @@ name = "spike_node_addon"
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "2", default-features = false, features = ["napi4"] }
+napi = { version = "2", default-features = false, features = ["napi4", "tokio_rt"] }
 napi-derive = "2"
 
 # On dynamic targets link the shared core dylib; on musl link the core rlib

@@ -232,7 +232,14 @@ if (prov.status !== 0) {
   process.exit(1);
 }
 const provOut = prov.stdout || "";
-assertIncludes("provider", provOut, ["add=5", "reverse=[3, 2, 1]", "greeting=hello, provider"]);
+assertIncludes("provider", provOut, [
+  "add=5",
+  "reverse=[3, 2, 1]",
+  "greeting=hello, provider",
+  "progress_ret=30",
+  "progress_seen=[1, 2, 3]",
+  "slow_add=42",
+]);
 
 log("RUN node addon (in-process host)");
 const nodeScript = `
@@ -241,13 +248,34 @@ console.log("add=" + addon.add(40, 2));
 const r = addon.reverseBytes([1, 2, 3]);
 console.log("reverse=" + JSON.stringify(Array.from(r)));
 console.log("greeting=" + addon.greeting("node"));
+
+// Callback boundary: pass a JS function; the addon bridges it to the core via a
+// ThreadsafeFunction. Calls arrive on the event loop, so check after a tick.
+const seen = [];
+const progressRet = addon.withProgress(3, (v) => seen.push(v));
+console.log("progress_ret=" + progressRet);
+
+(async () => {
+  // Async boundary: the core's async fn surfaces as a Promise.
+  const sum = await addon.slowAdd(20, 22);
+  console.log("slow_add=" + sum);
+  await new Promise((res) => setImmediate(res));
+  console.log("progress_seen=" + JSON.stringify(seen));
+})();
 `;
 const node = run(process.execPath, ["-e", nodeScript], { cwd: foreignCwd, env: cleanEnv });
 if (node.status !== 0) {
   console.error(`node exited ${node.status}`);
   process.exit(1);
 }
-assertIncludes("node", node.stdout || "", ["add=42", "reverse=[3,2,1]", "greeting=hello, node"]);
+assertIncludes("node", node.stdout || "", [
+  "add=42",
+  "reverse=[3,2,1]",
+  "greeting=hello, node",
+  "progress_ret=30",
+  "slow_add=42",
+  "progress_seen=[1,2,3]",
+]);
 
 log("SPIKE PASSED");
 
