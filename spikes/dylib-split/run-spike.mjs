@@ -13,7 +13,7 @@
 // Exits non-zero on the first failure so CI fails loudly.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, copyFileSync, readdirSync, renameSync } from "node:fs";
+import { mkdirSync, rmSync, copyFileSync, readdirSync, renameSync, existsSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir, platform } from "node:os";
@@ -22,6 +22,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const TARGET = join(HERE, "target", "release");
 const DIST = join(HERE, "dist");
 const OS = platform(); // 'win32' | 'darwin' | 'linux'
+
+// musl ships no dynamic libstd, so the Rust `dylib` crate type is unsupported
+// there. Detect it so we can report that as a known limitation, not a crash.
+const IS_MUSL =
+  OS === "linux" &&
+  (existsSync("/etc/alpine-release") ||
+    !process.report?.getReport?.()?.header?.glibcVersionRuntime);
 
 function log(section) {
   console.log(`\n=== ${section} ===`);
@@ -54,16 +61,25 @@ function dylibName(libName) {
 
 function findStdLib() {
   const sysroot = must("rustc", ["--print", "sysroot"]).stdout.trim();
-  const dir = OS === "win32" ? join(sysroot, "bin") : join(sysroot, "lib");
+  const targetLibdir = must("rustc", ["--print", "target-libdir"]).stdout.trim();
   const ext = OS === "win32" ? ".dll" : OS === "darwin" ? ".dylib" : ".so";
   const prefix = OS === "win32" ? "std-" : "libstd-";
-  const hit = readdirSync(dir).find((f) => f.startsWith(prefix) && f.endsWith(ext));
-  if (!hit) {
-    console.error(`Could not find dynamic std (${prefix}*${ext}) in ${dir}`);
-    console.error(`Dir contents: ${readdirSync(dir).join(", ")}`);
-    process.exit(1);
+  // The runtime shared std lives in target-libdir on unix, but in <sysroot>/bin
+  // on Windows; search the likely locations and take the first match.
+  const candidates = [targetLibdir, join(sysroot, "bin"), join(sysroot, "lib")];
+  for (const dir of candidates) {
+    let entries;
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    const hit = entries.find((f) => f.startsWith(prefix) && f.endsWith(ext));
+    if (hit) return join(dir, hit);
   }
-  return join(dir, hit);
+  console.error(`Could not find dynamic std (${prefix}*${ext}) in any of:`);
+  for (const dir of candidates) console.error(`  ${dir}`);
+  process.exit(1);
 }
 
 // --- 1. build --------------------------------------------------------------
@@ -75,9 +91,24 @@ if (OS === "linux") rustflags += " -C link-arg=-Wl,-rpath,$ORIGIN -C link-arg=-W
 if (OS === "darwin") rustflags += " -C link-arg=-Wl,-rpath,@loader_path";
 
 const buildEnv = { ...process.env, RUSTFLAGS: rustflags, RUSTC_WRAPPER: "" };
-must("cargo", ["build", "--release", "--manifest-path", join(HERE, "Cargo.toml")], {
+const build = run("cargo", ["build", "--release", "--manifest-path", join(HERE, "Cargo.toml")], {
   env: buildEnv,
 });
+if (build.status !== 0) {
+  if (IS_MUSL) {
+    log("KNOWN LIMITATION (musl)");
+    console.log(
+      "The musl target does not support the Rust `dylib` crate type (it ships no\n" +
+        "dynamic libstd), so the shared-core-dylib layout cannot be produced here.\n" +
+        "On musl the core would instead have to be a `cdylib` with an explicit C ABI,\n" +
+        "or be statically linked into each wrapper (accepting size duplication on this\n" +
+        "platform only). Treating this as an expected, documented limitation."
+    );
+    process.exit(0);
+  }
+  console.error(`cargo build failed (exit ${build.status})`);
+  process.exit(1);
+}
 
 // --- 2. stage --------------------------------------------------------------
 
