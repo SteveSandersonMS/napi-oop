@@ -4,6 +4,7 @@
 //! form differs from the in-proc native types.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -87,6 +88,101 @@ impl FromNapiValue for Buffer {
 impl ToNapiValue for Buffer {
     unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> napi::Result<sys::napi_value> {
         unsafe { napi_bp::Buffer::to_napi_value(env, napi_bp::Buffer::from(val.0)) }
+    }
+}
+
+/// UTF-16 string mirroring napi-rs's `Utf16String`. In-process it round-trips
+/// raw UTF-16 code units (including lone surrogates) byte-for-byte through the
+/// same N-API string calls napi-rs uses; over the wire it serializes as a UTF-8
+/// JS string (lossy only for unpaired surrogates, which can't survive a UTF-8
+/// hop anyway). Derefs to `[u16]` so `&value` passes to `&[u16]` APIs unchanged.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Utf16String(Vec<u16>);
+
+impl Deref for Utf16String {
+    type Target = [u16];
+    fn deref(&self) -> &[u16] {
+        &self.0
+    }
+}
+
+impl AsRef<[u16]> for Utf16String {
+    fn as_ref(&self) -> &[u16] {
+        &self.0
+    }
+}
+
+impl From<&str> for Utf16String {
+    fn from(s: &str) -> Self {
+        Utf16String(s.encode_utf16().collect())
+    }
+}
+
+impl From<String> for Utf16String {
+    fn from(s: String) -> Self {
+        Utf16String(s.encode_utf16().collect())
+    }
+}
+
+impl fmt::Display for Utf16String {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", String::from_utf16_lossy(&self.0))
+    }
+}
+
+impl Serialize for Utf16String {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&String::from_utf16_lossy(&self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for Utf16String {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(Utf16String(s.encode_utf16().collect()))
+    }
+}
+
+// In-proc napi bridge: round-trip UTF-16 code units through the same N-API
+// string calls napi-rs uses, so this unified type behaves byte-identically to
+// napi-rs's `Utf16String` when the cdylib is loaded directly by Node.
+impl TypeName for Utf16String {
+    fn type_name() -> &'static str {
+        napi_bp::Utf16String::type_name()
+    }
+    fn value_type() -> napi::ValueType {
+        napi_bp::Utf16String::value_type()
+    }
+}
+
+impl ValidateNapiValue for Utf16String {
+    unsafe fn validate(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<sys::napi_value> {
+        unsafe { napi_bp::Utf16String::validate(env, napi_val) }
+    }
+}
+
+impl FromNapiValue for Utf16String {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<Self> {
+        let real = unsafe { napi_bp::Utf16String::from_napi_value(env, napi_val)? };
+        Ok(Utf16String(real.to_vec()))
+    }
+}
+
+impl ToNapiValue for Utf16String {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> napi::Result<sys::napi_value> {
+        let mut ptr = std::ptr::null_mut();
+        napi::check_status!(
+            unsafe {
+                sys::napi_create_string_utf16(
+                    env,
+                    val.0.as_ptr().cast(),
+                    val.0.len() as isize,
+                    &mut ptr,
+                )
+            },
+            "Failed to convert Rust `Utf16String` into a JS string"
+        )?;
+        Ok(ptr)
     }
 }
 
@@ -583,6 +679,16 @@ mod tests {
         let v = to_wire(&b).unwrap();
         assert!(matches!(v, rmpv::Value::Binary(_)));
         assert_eq!(from_wire::<Buffer>(v).unwrap(), b);
+    }
+
+    #[test]
+    fn utf16string_round_trips_as_string() {
+        let s = Utf16String::from("héllo");
+        let v = to_wire(&s).unwrap();
+        assert!(matches!(v, rmpv::Value::String(_)));
+        assert_eq!(from_wire::<Utf16String>(v).unwrap(), s);
+        // Derefs to code units for `&[u16]` APIs.
+        assert_eq!(&*s, "héllo".encode_utf16().collect::<Vec<_>>().as_slice());
     }
 
     #[test]
