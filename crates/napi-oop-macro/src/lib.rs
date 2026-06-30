@@ -460,6 +460,15 @@ mod dual {
         let is_async = func.sig.asyncness.is_some();
         let output = &func.sig.output;
 
+        // Forward the original fn's doc comments onto the adapter so napi-derive
+        // carries them into the generated `.d.ts`; the original fn isn't `#[napi]`
+        // here, so the adapter is the only JS-visible declaration.
+        let doc_attrs: Vec<&syn::Attribute> = func
+            .attrs
+            .iter()
+            .filter(|attr| attr.path().is_ident("doc"))
+            .collect();
+
         let mut params = Vec::new();
         let mut call_args = Vec::new();
         for input in &func.sig.inputs {
@@ -559,6 +568,7 @@ mod dual {
         quote! {
             #func
 
+            #(#doc_attrs)*
             #[::napi_derive::napi(js_name = #ip_js_name)]
             pub #asyncness fn #adapter_ident(#(#params),*) #output {
                 #fn_name(#(#call_args),*)#await_tok
