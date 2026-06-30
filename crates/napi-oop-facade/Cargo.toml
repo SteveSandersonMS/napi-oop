@@ -15,6 +15,18 @@ rust-version.workspace = true
 name = "napi"
 path = "src/lib.rs"
 
+# Passthrough features so a consumer can enable the corresponding napi-rs
+# feature on the (renamed) `napi` crate this facade re-exports, e.g.
+# `napi = { package = "napi-oop-facade", features = ["async", "serde-json"] }`.
+# These map straight onto the inner real napi-rs dependency; because that inner
+# crate is the same `napi` package the rest of the build graph sees, the enabled
+# features unify across every crate that depends on napi.
+[features]
+async = ["napi/async"]
+serde-json = ["napi/serde-json"]
+dyn-symbols = ["napi/dyn-symbols"]
+object-indexmap = ["napi/object_indexmap"]
+
 [dependencies]
 napi-oop = { path = "../napi-oop" }
 napi-oop-macro = { path = "../napi-oop-macro" }

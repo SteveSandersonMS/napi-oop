@@ -1,17 +1,14 @@
 //! Out-of-process shims for the napi-rs surface that isn't a value-carrying type
 //! (those live in [`crate::types`]). These mirror napi-rs's `Error`, `Status`,
-//! `Env`, `Object`, `Utf16String`, `AsyncBlockBuilder`, and the `spawn` helpers
-//! so unmodified `#[napi]` source compiles on the `napi::` path out-of-process.
+//! `Env`, `Object`, `AsyncBlockBuilder`, and the `spawn` helpers so unmodified
+//! `#[napi]` source compiles on the `napi::` path out-of-process.
 //!
 //! Source compatibility is the contract: the signatures match napi-rs closely
 //! enough that the same code builds, while the behavior is adapted to the
 //! cross-process world (e.g. `Object` is a plain value map serialized over the
 //! wire rather than a live JS handle).
 
-use std::fmt;
-use std::ops::Deref;
-
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 // Dual-output build: `Error`, `Status`, and `Result` are the *real* napi-rs
 // types, re-exported here so the `napi::` facade surfaces them unchanged. Using
@@ -81,52 +78,6 @@ impl Serialize for Object<'_> {
     }
 }
 
-/// Mirrors napi-rs's `Utf16String`. In-process this preserves raw UTF-16 code
-/// units (incl. lone surrogates) across the boundary; over MessagePack a JS
-/// string arrives as UTF-8, so this decodes to code units (lossy only for
-/// unpaired surrogates, which can't survive a UTF-8 hop anyway). Derefs to
-/// `[u16]` so `&value` passes to `&[u16]` APIs unchanged.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Utf16String(Vec<u16>);
-
-impl Deref for Utf16String {
-    type Target = [u16];
-    fn deref(&self) -> &[u16] {
-        &self.0
-    }
-}
-
-impl AsRef<[u16]> for Utf16String {
-    fn as_ref(&self) -> &[u16] {
-        &self.0
-    }
-}
-
-impl From<&str> for Utf16String {
-    fn from(s: &str) -> Self {
-        Utf16String(s.encode_utf16().collect())
-    }
-}
-
-impl fmt::Display for Utf16String {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", String::from_utf16_lossy(&self.0))
-    }
-}
-
-impl Serialize for Utf16String {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        s.serialize_str(&String::from_utf16_lossy(&self.0))
-    }
-}
-
-impl<'de> Deserialize<'de> for Utf16String {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        Ok(Utf16String(s.encode_utf16().collect()))
-    }
-}
-
 /// Mirrors napi-rs's `AsyncBlockBuilder`, which wraps an async block so it can be
 /// turned into a JS `Promise`. Out-of-process the macro already drives async
 /// `#[napi]` fns to completion, so this minimal shim exists for source
@@ -177,7 +128,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{from_wire, to_wire};
+    use crate::wire::to_wire;
 
     #[test]
     fn error_from_reason_carries_message() {
@@ -185,16 +136,6 @@ mod tests {
         assert_eq!(e.reason, "boom");
         assert_eq!(e.status, Status::GenericFailure);
         assert_eq!(e.to_string(), "GenericFailure, boom");
-    }
-
-    #[test]
-    fn utf16string_round_trips_as_string() {
-        let s = Utf16String::from("héllo");
-        let v = to_wire(&s).unwrap();
-        assert!(matches!(v, rmpv::Value::String(_)));
-        assert_eq!(from_wire::<Utf16String>(v).unwrap(), s);
-        // Derefs to code units for `&[u16]` APIs.
-        assert_eq!(&*s, "héllo".encode_utf16().collect::<Vec<_>>().as_slice());
     }
 
     #[test]
