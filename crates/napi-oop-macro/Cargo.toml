@@ -1,6 +1,6 @@
 [package]
 name = "napi-oop-macro"
-description = "The #[napi] attribute macro for napi-oop (in-process or out-of-process build modes)."
+description = "The #[napi] attribute macro for napi-oop: emits the real napi ABI plus out-of-process remoting glue from one source."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,13 +9,6 @@ rust-version.workspace = true
 
 [lib]
 proc-macro = true
-
-[features]
-# Default: behave like a normal in-process napi-rs build.
-default = ["in-proc"]
-in-proc = []
-# Opt-in: emit out-of-process remoting glue instead.
-out-of-proc = []
 
 [dependencies]
 syn = { version = "2", features = ["full"] }

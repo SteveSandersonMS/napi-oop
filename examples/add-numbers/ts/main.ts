@@ -40,9 +40,10 @@ async function callAddNumbers(provider: SyncProvider): Promise<void> {
   });
   console.log(`[${role}] sumEach => ${total}, steps=[${steps.join(', ')}]`);
 
-  // The explicit ThreadsafeFunction form — same fire-and-forget semantics.
+  // The explicit ThreadsafeFunction form — same fire-and-forget semantics. Being
+  // CalleeHandled (the napi default), its callback is invoked error-first.
   const tsteps: number[] = [];
-  const tt = native.sumEachTsfn([10, 20, 30], (running) => {
+  const tt = native.sumEachTsfn([10, 20, 30], (_err, running) => {
     tsteps.push(running);
   });
   console.log(`[${role}] sumEachTsfn => ${tt}, steps=[${tsteps.join(', ')}]`);

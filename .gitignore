@@ -14,3 +14,7 @@ examples/add-numbers/ts/generated/
 examples/tokio-fetch/ts/generated/
 examples/native-add/target/
 tests/e2e/ts/generated/
+
+# Staged in-proc napi addon (a copy of the dual-ABI cdylib, built on demand)
+tests/e2e/fixture.node
+spikes/

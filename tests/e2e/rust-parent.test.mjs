@@ -24,6 +24,8 @@ test('rust-parent: every flow with Rust spawning Node', async () => {
   assert.equal(r.tsfnSum, 60);
   assert.deepEqual(r.reversed, [4, 3, 2, 1]);
   assert.equal(r.big, '42');
+  assert.equal(r.bigEcho, '123456789012345678901234567890', 'wide BigInt round-trips with full precision');
+  assert.equal(r.bigEchoNeg, '-98765432109876543210987654321', 'negative wide BigInt round-trips');
   assert.equal(r.pointLabel, 'p', 'object field exposed camelCased');
   assert.equal(r.pointDesc, 'p=(2,3)', 'object decoded back by value');
   assert.equal(r.imageArea, 20, '&External<T> derefs to inner value');

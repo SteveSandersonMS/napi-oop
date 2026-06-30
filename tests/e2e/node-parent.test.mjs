@@ -26,6 +26,8 @@ test('node-parent: every flow over the real socket boundary', async () => {
   assert.deepEqual(r.tsfnSteps, [10, 30, 60]);
   assert.deepEqual(r.reversed, [4, 3, 2, 1]);
   assert.equal(r.big, '42');
+  assert.equal(r.bigEcho, '123456789012345678901234567890', 'wide BigInt round-trips with full precision');
+  assert.equal(r.bigEchoNeg, '-98765432109876543210987654321', 'negative wide BigInt round-trips');
 
   // #[napi(object)] value struct: camelCase field access + by-value arg.
   assert.equal(r.pointLabel, 'p', 'object field exposed camelCased');

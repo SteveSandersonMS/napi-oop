@@ -1,7 +1,11 @@
-//! E2E test fixture provider. A dedicated set of `#[napi]` functions exercising
-//! every cross-process flow napi-oop supports — sync, async, both callback
-//! forms, Buffer, BigInt, and External (incl. a slab probe to prove GC release).
-//! Kept separate from the examples so the examples stay clean and human-facing.
+//! E2E test fixture: a set of `#[napi]` functions exercising every cross-process
+//! flow napi-oop supports — sync, async, both callback forms, Buffer, BigInt,
+//! and External (incl. a slab probe to prove GC release).
+//!
+//! Built as a single **dual-ABI cdylib**. Node loads it directly as an in-process
+//! napi addon (the real napi ABI emitted by the macro); a thin Rust host exe
+//! dlopens it and calls [`napi_oop_e2e_main`] to serve a Node child out-of-process
+//! over napi-oop. Both doors are generated from the same `#[napi]` source.
 
 use std::process::Command;
 
@@ -53,7 +57,7 @@ pub fn sum_each_tsfn(values: Vec<i32>, on_step: napi::ThreadsafeFunction<i32>) -
     let mut total = 0;
     for v in values {
         total += v;
-        on_step.call(total, NonBlocking);
+        on_step.call(Ok(total), NonBlocking);
     }
     total
 }
@@ -102,6 +106,17 @@ pub fn double_big(n: napi::BigInt) -> napi::BigInt {
     napi::BigInt {
         sign_bit: false,
         words: vec![value.wrapping_mul(2)],
+    }
+}
+
+/// Echo a BigInt unchanged, preserving sign and every 64-bit word. Proves the
+/// wire carries arbitrary-precision BigInts (wider than 64 bits, and negative)
+/// identically to the in-proc napi door, rather than truncating to one word.
+#[napi]
+pub fn echo_big(n: napi::BigInt) -> napi::BigInt {
+    napi::BigInt {
+        sign_bit: n.sign_bit,
+        words: n.words,
     }
 }
 
@@ -244,9 +259,11 @@ impl Counter {
         Tally { total: self.value }
     }
 
-    /// An async mutating method, returning the new value as a Promise.
+    /// An async mutating method, returning the new value as a Promise. napi-rs
+    /// requires `&mut self` async methods to be `unsafe` (the receiver is held
+    /// across an await); the keyword is the only change, semantics are unchanged.
     #[napi]
-    pub async fn add_slow(&mut self, n: i32) -> i32 {
+    pub async unsafe fn add_slow(&mut self, n: i32) -> i32 {
         std::thread::sleep(std::time::Duration::from_millis(50));
         self.value += n;
         self.value
@@ -314,12 +331,22 @@ pub fn make_bert_box(value: i32) -> BertBox {
     BertBox { value }
 }
 
-fn main() {
+/// Out-of-process provider entry, exported for a thin host exe to dlopen and
+/// call. It runs in the host's own process, so it reads `argv`/env directly —
+/// serving an existing socket (`SOCKET_ENV` set, the Node-parent case), spawning
+/// and serving a child command from argv (the Rust-parent case), or emitting the
+/// manifest. Returns the process exit code for the host to propagate.
+///
+/// This is the out-of-process door of the dual-ABI cdylib; Node's in-process
+/// `require()` uses the napi addon door (`napi_register_module_v1`) instead and
+/// never calls this.
+#[no_mangle]
+pub extern "C" fn napi_oop_e2e_main() -> i32 {
     let mut argv = std::env::args().skip(1);
     let first = argv.next();
     if first.as_deref() == Some("--emit-manifest") {
         println!("{}", napi_oop::manifest::manifest_json());
-        return;
+        return 0;
     }
     let result = if std::env::var_os(SOCKET_ENV).is_some() {
         serve_from_env()
@@ -328,7 +355,7 @@ fn main() {
         child.extend(argv);
         if child.is_empty() {
             eprintln!("usage: e2e-provider <child-command...> (or --emit-manifest)");
-            std::process::exit(2);
+            return 2;
         }
         let mut command = Command::new(&child[0]);
         command.args(&child[1..]);
@@ -336,6 +363,7 @@ fn main() {
     };
     if let Err(e) = result {
         eprintln!("[e2e-provider] error: {e}");
-        std::process::exit(1);
+        return 1;
     }
+    0
 }

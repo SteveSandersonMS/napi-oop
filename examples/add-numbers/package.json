@@ -5,7 +5,7 @@
   "description": "Example: a TypeScript entrypoint calling an out-of-process Rust add_numbers function",
   "main": "dist/main.js",
   "scripts": {
-    "build:native": "cargo build --release -p add-numbers-example",
+    "build:native": "cargo build --release -p add-numbers-example -p add-numbers-provider-host",
     "build:types": "node ../../packages/runtime/dist/codegen-cli.js ../../target/release/add-numbers-provider ts/generated AddNumbers",
     "build:ts": "tsc",
     "build": "npm run build:native && npm run build:types && npm run build:ts",

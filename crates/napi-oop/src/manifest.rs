@@ -106,6 +106,9 @@ pub fn rust_to_ts_with(rust: &str, known: &std::collections::HashMap<String, Str
         "()" => "void".to_string(),
         "Buffer" => "Uint8Array".to_string(),
         "BigInt" => "bigint".to_string(),
+        // Sentinel for the error-first param of a `CalleeHandled` ThreadsafeFunction
+        // callback; mirrors napi-rs's `(err: Error | null, …)` rendering.
+        "__NapiCbErr" => "Error | null".to_string(),
         other => {
             if let Some(ts) = fn_type_to_ts(other, known) {
                 ts

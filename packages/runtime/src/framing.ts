@@ -11,7 +11,14 @@ import { Packr } from 'msgpackr';
 // instead of msgpackr's default fixext marker, so a missing/`undefined` argument
 // or field decodes as Rust `None` rather than failing `rmp-serde` with an
 // "invalid type: newtype struct" error.
-const packr = new Packr({ useRecords: false, encodeUndefinedAsNil: true });
+// `useBigIntExtension: true` encodes JS `bigint`s wider than 64 bits as the
+// `0x42` extension (big-endian two's complement) instead of throwing, matching
+// the Rust `BigInt` wire form so arbitrary-precision values round-trip losslessly.
+const packr = new Packr({
+  useRecords: false,
+  encodeUndefinedAsNil: true,
+  useBigIntExtension: true,
+});
 
 /** Encode a message as a length-prefixed MessagePack frame. */
 export function encodeFrame(message: unknown): Buffer {

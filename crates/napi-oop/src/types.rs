@@ -8,6 +8,8 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use napi::bindgen_prelude::{self as napi_bp, FromNapiValue, ToNapiValue, TypeName, ValidateNapiValue};
+use napi::sys;
 use serde::{Deserialize, Serialize};
 
 /// Binary blob mirroring napi-rs's `Buffer`. On the wire it is MessagePack `bin`
@@ -58,11 +60,42 @@ impl<'de> Deserialize<'de> for Buffer {
     }
 }
 
-/// Opaque BigInt mirroring napi-rs's `BigInt`. The runtime uses these purely as
-/// 64-bit handle tokens, but the field layout matches napi-rs (`sign_bit` plus a
-/// `words` vector) so source that constructs `BigInt { sign_bit, words: vec![h] }`
-/// or calls `get_u64()` compiles unchanged. On the wire it is the single low word
-/// as a u64 (the JS `bigint` MessagePack encoding).
+// In-proc napi bridge: delegate to the real napi `Buffer` so this unified type can
+// be a `#[napi]` parameter/return when the cdylib is loaded directly by Node.
+impl TypeName for Buffer {
+    fn type_name() -> &'static str {
+        napi_bp::Buffer::type_name()
+    }
+    fn value_type() -> napi::ValueType {
+        napi_bp::Buffer::value_type()
+    }
+}
+
+impl ValidateNapiValue for Buffer {
+    unsafe fn validate(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<sys::napi_value> {
+        unsafe { napi_bp::Buffer::validate(env, napi_val) }
+    }
+}
+
+impl FromNapiValue for Buffer {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<Self> {
+        let real = unsafe { napi_bp::Buffer::from_napi_value(env, napi_val)? };
+        Ok(Buffer(real.to_vec()))
+    }
+}
+
+impl ToNapiValue for Buffer {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> napi::Result<sys::napi_value> {
+        unsafe { napi_bp::Buffer::to_napi_value(env, napi_bp::Buffer::from(val.0)) }
+    }
+}
+
+/// BigInt mirroring napi-rs's `BigInt`, with the same field layout (`sign_bit`
+/// plus a little-endian `words` vector) so source that constructs
+/// `BigInt { sign_bit, words }` or calls `get_u64()` compiles unchanged. On the
+/// wire it rides as msgpackr's `0x42` bigint extension (big-endian two's
+/// complement), so values of any width round-trip to a JS `bigint` losslessly —
+/// matching the in-proc napi door, which carries the native full-precision value.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct BigInt {
     pub sign_bit: bool,
@@ -88,15 +121,171 @@ impl From<u64> for BigInt {
     }
 }
 
+/// MessagePack extension type id for arbitrary-precision integers, matching
+/// msgpackr's `useBigIntExtension` encoding. The JS runtime decodes ext-`0x42`
+/// unconditionally to a `bigint`, and emits it for values that overflow 64 bits.
+const BIGINT_EXT_TYPE: i8 = 0x42;
+
+/// Encode a sign-magnitude [`BigInt`] (napi's `{ sign_bit, words }`, words little
+/// -endian) as the big-endian two's-complement byte string msgpackr uses for its
+/// `0x42` bigint extension. Used so a `BigInt` of any width round-trips losslessly
+/// to a JS `bigint` over the wire — matching the in-proc napi door, where the
+/// native `BigInt` is already full precision.
+fn bigint_to_twos_complement_be(sign_bit: bool, words: &[u64]) -> Vec<u8> {
+    // Magnitude, big-endian (high word first), with leading zero bytes stripped.
+    let mut be = Vec::with_capacity(words.len() * 8);
+    for &w in words.iter().rev() {
+        be.extend_from_slice(&w.to_be_bytes());
+    }
+    let first_nonzero = be.iter().position(|&b| b != 0).unwrap_or(be.len());
+    let mut mag = be[first_nonzero..].to_vec();
+    if mag.is_empty() {
+        return vec![0]; // value is zero
+    }
+    if !sign_bit {
+        // Positive: keep the sign bit clear so msgpackr reads it as non-negative.
+        if mag[0] & 0x80 != 0 {
+            mag.insert(0, 0x00);
+        }
+        mag
+    } else {
+        // Negative: emit two's complement, widening by a byte if needed so the
+        // result's high bit is set (i.e. reads back as negative).
+        if mag[0] & 0x80 != 0 {
+            mag.insert(0, 0x00);
+        }
+        let mut carry = 1u16;
+        for b in mag.iter_mut().rev() {
+            let v = (!*b as u16) + carry;
+            *b = (v & 0xff) as u8;
+            carry = v >> 8;
+        }
+        mag
+    }
+}
+
+/// Decode a big-endian two's-complement byte string (msgpackr's `0x42` bigint
+/// extension) back into napi's sign-magnitude `{ sign_bit, words }` form.
+fn bigint_from_twos_complement_be(bytes: &[u8]) -> (bool, Vec<u64>) {
+    if bytes.is_empty() {
+        return (false, vec![0]);
+    }
+    let negative = bytes[0] & 0x80 != 0;
+    // Recover the unsigned magnitude (undo two's complement for negatives).
+    let mag: Vec<u8> = if negative {
+        let mut inv: Vec<u8> = bytes.iter().map(|b| !b).collect();
+        let mut carry = 1u16;
+        for b in inv.iter_mut().rev() {
+            let v = (*b as u16) + carry;
+            *b = (v & 0xff) as u8;
+            carry = v >> 8;
+        }
+        inv
+    } else {
+        bytes.to_vec()
+    };
+    // Left-pad to a multiple of 8 bytes, then fold into little-endian u64 words.
+    let pad = (8 - mag.len() % 8) % 8;
+    let mut padded = vec![0u8; pad];
+    padded.extend_from_slice(&mag);
+    let mut words = Vec::with_capacity(padded.len() / 8);
+    let mut i = padded.len();
+    while i >= 8 {
+        let chunk: [u8; 8] = padded[i - 8..i].try_into().unwrap();
+        words.push(u64::from_be_bytes(chunk));
+        i -= 8;
+    }
+    while words.len() > 1 && *words.last().unwrap() == 0 {
+        words.pop();
+    }
+    (negative, words)
+}
+
 impl Serialize for BigInt {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_u64(self.words.first().copied().unwrap_or(0))
+        // Always ride the wire as a msgpack ext (`0x42`): rmpv would compact a
+        // plain integer to its smallest form, which msgpackr then decodes as a JS
+        // `number`, not a `bigint`. The ext is decoded unconditionally as a
+        // `bigint`, preserving the full value and the JS type.
+        let bytes = bigint_to_twos_complement_be(self.sign_bit, &self.words);
+        s.serialize_newtype_struct(
+            rmp_serde::MSGPACK_EXT_STRUCT_NAME,
+            &(BIGINT_EXT_TYPE, serde_bytes::Bytes::new(&bytes)),
+        )
     }
 }
 
 impl<'de> Deserialize<'de> for BigInt {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        u64::deserialize(d).map(BigInt::from)
+        struct BigIntVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for BigIntVisitor {
+            type Value = BigInt;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an integer or a msgpack bigint extension")
+            }
+
+            // A JS `bigint` that fits 64 bits arrives as a native msgpack int.
+            fn visit_u64<E>(self, v: u64) -> Result<BigInt, E> {
+                Ok(BigInt::from(v))
+            }
+
+            fn visit_i64<E>(self, v: i64) -> Result<BigInt, E> {
+                Ok(BigInt {
+                    sign_bit: v < 0,
+                    words: vec![v.unsigned_abs()],
+                })
+            }
+
+            // A wider `bigint` arrives as the `0x42` ext: a `(tag, bytes)` pair.
+            fn visit_newtype_struct<D>(self, de: D) -> Result<BigInt, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let (_tag, bytes): (i8, serde_bytes::ByteBuf) = Deserialize::deserialize(de)?;
+                let (sign_bit, words) = bigint_from_twos_complement_be(&bytes);
+                Ok(BigInt { sign_bit, words })
+            }
+        }
+
+        d.deserialize_any(BigIntVisitor)
+    }
+}
+
+// In-proc napi bridge: delegate to the real napi `BigInt` (identical field shape).
+impl TypeName for BigInt {
+    fn type_name() -> &'static str {
+        napi_bp::BigInt::type_name()
+    }
+    fn value_type() -> napi::ValueType {
+        napi_bp::BigInt::value_type()
+    }
+}
+
+impl ValidateNapiValue for BigInt {}
+
+impl FromNapiValue for BigInt {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<Self> {
+        let real = unsafe { napi_bp::BigInt::from_napi_value(env, napi_val)? };
+        Ok(BigInt {
+            sign_bit: real.sign_bit,
+            words: real.words,
+        })
+    }
+}
+
+impl ToNapiValue for BigInt {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> napi::Result<sys::napi_value> {
+        unsafe {
+            napi_bp::BigInt::to_napi_value(
+                env,
+                napi_bp::BigInt {
+                    sign_bit: val.sign_bit,
+                    words: val.words,
+                },
+            )
+        }
     }
 }
 
@@ -128,24 +317,43 @@ pub fn external_mint_count() -> u64 {
 }
 
 /// JS-held opaque handle to a Rust value mirroring napi-rs's `External<T>`. The
-/// value stays provider-side in a slab and is shared via `Arc`; only a u64 token
-/// crosses the boundary. Like napi-rs, `External<T>` derefs to `&T`, so source
-/// that calls inner methods/fields through the handle compiles unchanged.
+/// value is shared via `Arc`. On the **out-of-proc** path it stays provider-side
+/// in a slab and only a u64 token crosses the boundary; the token is minted
+/// lazily the first time the handle is serialized (so the in-proc napi path,
+/// which never serializes, never touches the slab and cannot leak it). On the
+/// **in-proc** path the `Arc<T>` rides inside a real napi `External<Arc<T>>`.
+/// Like napi-rs, `External<T>` derefs to `&T`, so source that calls inner
+/// methods/fields through the handle compiles unchanged.
 pub struct External<T: Send + Sync + 'static> {
-    token: u64,
+    /// Wire token: `0` until minted on first serialize (out-of-proc only).
+    token: AtomicU64,
     value: Arc<T>,
 }
 
 impl<T: Send + Sync + 'static> External<T> {
     pub fn new(value: T) -> Self {
+        External {
+            token: AtomicU64::new(0),
+            value: Arc::new(value),
+        }
+    }
+
+    /// Mint (or return the existing) wire token, inserting the value into the
+    /// provider slab on first call. Only invoked on the out-of-proc serialize path.
+    fn wire_token(&self) -> u64 {
+        let existing = self.token.load(Ordering::Relaxed);
+        if existing != 0 {
+            return existing;
+        }
         let token = EXTERNAL_NEXT.fetch_add(1, Ordering::Relaxed);
         MINTED.with(|c| c.set(c.get() + 1));
-        let value = Arc::new(value);
-        let mut guard = EXTERNAL_SLAB.lock().unwrap();
-        guard
+        EXTERNAL_SLAB
+            .lock()
+            .unwrap()
             .get_or_insert_with(HashMap::new)
-            .insert(token, Slot::Ext(value.clone()));
-        External { token, value }
+            .insert(token, Slot::Ext(self.value.clone()));
+        self.token.store(token, Ordering::Relaxed);
+        token
     }
 
     /// Run `f` against the held value. Always live (the `Arc` is held inline).
@@ -304,8 +512,9 @@ fn external_lookup<T: Send + Sync + 'static>(token: u64) -> Option<Arc<T>> {
 impl<T: Send + Sync + 'static> Serialize for External<T> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
+        let token = self.wire_token();
         let mut m = s.serialize_map(Some(1))?;
-        m.serialize_entry(EXTERNAL_KEY, &self.token)?;
+        m.serialize_entry(EXTERNAL_KEY, &token)?;
         m.end()
     }
 }
@@ -318,7 +527,48 @@ impl<'de, T: Send + Sync + 'static> Deserialize<'de> for External<T> {
             .ok_or_else(|| serde::de::Error::custom("not an external handle"))?;
         let value = external_lookup::<T>(token)
             .ok_or_else(|| serde::de::Error::custom("external handle no longer live"))?;
-        Ok(External { token, value })
+        Ok(External {
+            token: AtomicU64::new(token),
+            value,
+        })
+    }
+}
+
+// In-proc napi bridge: carry the shared `Arc<T>` inside a real napi `External`,
+// so the same handle type works when the cdylib is loaded directly by Node. The
+// payload type is always `Arc<T>`, keeping napi's type-tag check consistent
+// across construction and read-back.
+impl<T: Send + Sync + 'static> TypeName for External<T> {
+    fn type_name() -> &'static str {
+        "External"
+    }
+    fn value_type() -> napi::ValueType {
+        napi::ValueType::External
+    }
+}
+
+impl<T: Send + Sync + 'static> ValidateNapiValue for External<T> {}
+
+impl<T: Send + Sync + 'static> FromNapiValue for External<T> {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<Self> {
+        // napi v3's owned `External<T>` is `ToNapiValue`-only; decoding a JS
+        // external goes through `FromNapiRef`, which lends a `&'static External`.
+        // The external wraps `Arc<T>` (External derefs to its payload), so we
+        // clone the `Arc` out to own a shared handle.
+        let real = unsafe {
+            <napi_bp::External<Arc<T>> as napi_bp::FromNapiRef>::from_napi_ref(env, napi_val)?
+        };
+        let value: Arc<T> = (**real).clone();
+        Ok(External {
+            token: AtomicU64::new(0),
+            value,
+        })
+    }
+}
+
+impl<T: Send + Sync + 'static> ToNapiValue for External<T> {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> napi::Result<sys::napi_value> {
+        unsafe { napi_bp::External::<Arc<T>>::to_napi_value(env, napi_bp::External::new(val.value)) }
     }
 }
 
@@ -339,7 +589,53 @@ mod tests {
     fn bigint_round_trips_as_u64() {
         let big = BigInt::from(9_000_000_000_000_000_000u64);
         let v = to_wire(&big).unwrap();
-        assert_eq!(from_wire::<BigInt>(v).unwrap().words, big.words);
+        let back = from_wire::<BigInt>(v).unwrap();
+        assert_eq!(back.words, big.words);
+        assert!(!back.sign_bit);
+    }
+
+    #[test]
+    fn bigint_round_trips_with_full_precision_and_sign() {
+        // Multi-word magnitudes and negatives must survive the wire losslessly,
+        // not be truncated to a single u64 — matching the in-proc napi door.
+        let cases = [
+            BigInt {
+                sign_bit: false,
+                words: vec![0],
+            },
+            BigInt {
+                sign_bit: false,
+                words: vec![u64::MAX],
+            },
+            BigInt {
+                sign_bit: true,
+                words: vec![1],
+            },
+            BigInt {
+                sign_bit: false,
+                words: vec![0, 1], // 2^64
+            },
+            BigInt {
+                sign_bit: true,
+                words: vec![7, 0, 0xDEAD_BEEF], // large negative, 3 words
+            },
+            BigInt {
+                sign_bit: false,
+                words: vec![u64::MAX, u64::MAX, u64::MAX],
+            },
+        ];
+        for big in cases {
+            let v = to_wire(&big).unwrap();
+            // Wide values must travel as a msgpack ext, not a plain integer.
+            if big.words.iter().filter(|&&w| w != 0).count() > 1 || big.words[0] > i64::MAX as u64 {
+                assert!(
+                    matches!(v, rmpv::Value::Ext(BIGINT_EXT_TYPE, _)),
+                    "wide bigint should be an ext: {big:?} -> {v:?}"
+                );
+            }
+            let back = from_wire::<BigInt>(v).unwrap();
+            assert_eq!(back, big, "bigint round trip mismatch");
+        }
     }
 
     #[test]
@@ -353,8 +649,8 @@ mod tests {
     #[test]
     fn release_external_frees_the_slab_entry() {
         let e = External::new(vec![1i32, 2, 3]);
-        let token = e.token;
         let wire = to_wire(&e).unwrap();
+        let token = e.token.load(Ordering::Relaxed);
         assert_eq!(e.with(|v| v.len()), Some(3));
         release_external(token);
         // After release the token no longer resolves — no leak, no double-free.

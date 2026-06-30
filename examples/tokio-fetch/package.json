@@ -5,11 +5,12 @@
   "description": "Example: a TypeScript entrypoint calling an out-of-process tokio-based async Rust function",
   "main": "dist/main.js",
   "scripts": {
-    "build:native": "cargo build --release -p tokio-fetch-example",
+    "build:native": "cargo build --release -p tokio-fetch-example -p tokio-fetch-provider-host",
     "build:types": "node ../../packages/runtime/dist/codegen-cli.js ../../target/release/tokio-fetch-provider ts/generated TokioFetch",
     "build:ts": "tsc",
     "build": "npm run build:native && npm run build:types && npm run build:ts",
-    "start": "node dist/main.js",
+    "start": "npm run start:node-parent",
+    "start:node-parent": "node dist/main.js",
     "start:rust-parent": "node rust-parent.mjs"
   },
   "dependencies": {
