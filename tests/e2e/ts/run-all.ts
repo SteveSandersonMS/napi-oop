@@ -52,10 +52,16 @@ async function exercise(provider: SyncProvider) {
   const sum = native.sumEach([10, 20, 30], (running) => sumSteps.push(running));
 
   const tsfnSteps: number[] = [];
-  const tsfnSum = native.sumEachTsfn([10, 20, 30], (running) => tsfnSteps.push(running));
+  // The explicit `ThreadsafeFunction<T>` is `CalleeHandled` by default, so its
+  // JS callback receives `(err, value)` — exactly like a vanilla napi TSFN.
+  const tsfnSum = native.sumEachTsfn([10, 20, 30], (_err, running) => tsfnSteps.push(running));
 
   const reversed = Array.from(native.reverseBytes(Buffer.from([1, 2, 3, 4])) as Uint8Array);
   const big = native.doubleBig(21n).toString();
+  // Arbitrary-precision BigInt: wider than 64 bits and negative, echoed unchanged
+  // to prove the wire preserves full precision (sign + every word).
+  const bigEcho = native.echoBig(123456789012345678901234567890n).toString();
+  const bigEchoNeg = native.echoBig(-98765432109876543210987654321n).toString();
 
   // #[napi(object)] value struct: returned by value as a typed object with
   // camelCase fields, and accepted back by value.
@@ -124,6 +130,8 @@ async function exercise(provider: SyncProvider) {
     tsfnSteps,
     reversed,
     big,
+    bigEcho,
+    bigEchoNeg,
     pointLabel,
     pointDesc,
     imageArea,

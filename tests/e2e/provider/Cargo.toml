@@ -1,0 +1,16 @@
+[package]
+name = "napi-oop-e2e-provider"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# A deliberately thin host: it does NOT statically link the runtime. It dlopens
+# the sibling dual-ABI cdylib (the same artifact Node loads in-process) and calls
+# its exported `napi_oop_e2e_main` provider entry. This proves ONE build output
+# serves both the in-process (Node require) and out-of-process (Rust host) modes.
+[[bin]]
+name = "e2e-provider"
+path = "src/main.rs"
+
+[dependencies]
+libloading = "0.8"

@@ -13,104 +13,12 @@ use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
 
-/// Drop-in for `napi::Result`. Mirrors napi-rs's alias so `napi::Result<T>`
-/// (one type argument) resolves out-of-process exactly as in-process.
-pub type Result<T, E = Error> = std::result::Result<T, E>;
-
-/// Mirrors napi-rs's `Status`. Out-of-process there is no live N-API call to
-/// fail, so the variant is informational — carried inside [`Error`] and accepted
-/// as the error-status type parameter of [`crate::ThreadsafeFunction`]. The
-/// variant set matches napi-rs so `Status::GenericFailure` etc. resolve.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Status {
-    Ok,
-    InvalidArg,
-    ObjectExpected,
-    StringExpected,
-    NameExpected,
-    FunctionExpected,
-    NumberExpected,
-    BooleanExpected,
-    ArrayExpected,
-    #[default]
-    GenericFailure,
-    PendingException,
-    Cancelled,
-    EscapeCalledTwice,
-    HandleScopeMismatch,
-    CallbackScopeMismatch,
-    QueueFull,
-    Closing,
-    BigintExpected,
-    DateExpected,
-    ArrayBufferExpected,
-    DetachableArraybufferExpected,
-    WouldDeadlock,
-    NoExternalBuffersAllowed,
-    Unknown,
-}
-
-impl fmt::Display for Status {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-
-/// Mirrors napi-rs's `Error`. In-process this wraps an N-API status + message
-/// that becomes a thrown JS exception; out-of-process the dispatcher turns a
-/// returned `Err` into an error reply carrying the message, so only the
-/// `reason` string crosses the boundary. `status` is retained for source
-/// compatibility (`Error::new(Status::…, …)`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Error {
-    pub status: Status,
-    pub reason: String,
-}
-
-impl Error {
-    /// Build an error from a human-readable reason, defaulting the status to
-    /// `GenericFailure` — the common napi-rs constructor. Accepts any
-    /// `ToString` value (matching napi-rs), so error types that implement only
-    /// `Display` — not `Into<String>` — can be passed directly.
-    pub fn from_reason<T: ToString>(reason: T) -> Self {
-        Error {
-            status: Status::GenericFailure,
-            reason: reason.to_string(),
-        }
-    }
-
-    /// Build an error with an explicit status and reason.
-    pub fn new<T: ToString>(status: Status, reason: T) -> Self {
-        Error {
-            status,
-            reason: reason.to_string(),
-        }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.reason.is_empty() {
-            write!(f, "{}", self.status)
-        } else {
-            write!(f, "{}", self.reason)
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl From<String> for Error {
-    fn from(reason: String) -> Self {
-        Error::from_reason(reason)
-    }
-}
-
-impl From<&str> for Error {
-    fn from(reason: &str) -> Self {
-        Error::from_reason(reason)
-    }
-}
+// Dual-output build: `Error`, `Status`, and `Result` are the *real* napi-rs
+// types, re-exported here so the `napi::` facade surfaces them unchanged. Using
+// the real types is what lets the in-proc door's `#[napi]` codegen turn a
+// returned `Err` into a thrown JS exception; the out-of-proc door needs nothing
+// special since it only stringifies the error (`Error: Display`) onto the wire.
+pub use napi::{Error, Result, Status};
 
 /// Mirrors napi-rs's `Env`. Out-of-process there is no JS environment to borrow,
 /// so this is an opaque zero-sized token: it satisfies signatures that thread an
@@ -276,7 +184,7 @@ mod tests {
         let e = Error::from_reason("boom");
         assert_eq!(e.reason, "boom");
         assert_eq!(e.status, Status::GenericFailure);
-        assert_eq!(e.to_string(), "boom");
+        assert_eq!(e.to_string(), "GenericFailure, boom");
     }
 
     #[test]

@@ -7,7 +7,6 @@ use napi_oop::registry;
 use napi_oop::rmpv::Value;
 use napi_oop::wire::from_wire;
 use napi_oop_macro::napi;
-use serde::{Deserialize, Serialize};
 
 #[napi]
 pub fn add_numbers(a: i32, b: i32) -> i32 {
@@ -19,11 +18,12 @@ pub fn greet(name: String) -> String {
     format!("Hello, {name}!")
 }
 
-/// A derived struct crosses the boundary with no bespoke codec — serde alone.
-#[derive(Serialize, Deserialize)]
+/// A derived struct crosses the boundary with no bespoke codec — serde alone;
+/// on the in-proc door it rides as a napi object.
+#[napi(object)]
 pub struct Point {
-    x: i32,
-    y: i32,
+    pub x: i32,
+    pub y: i32,
 }
 
 #[napi]
@@ -47,9 +47,9 @@ pub fn boom(_n: i32) -> i32 {
 /// Returns `Result`: Ok unwraps to a value, Err maps to an error reply (a thrown
 /// JS exception out-of-process), mirroring napi-rs.
 #[napi]
-pub fn checked_div(a: i32, b: i32) -> Result<i32, String> {
+pub fn checked_div(a: i32, b: i32) -> napi::Result<i32> {
     if b == 0 {
-        Err("divide by zero".to_string())
+        Err(napi::Error::from_reason("divide by zero"))
     } else {
         Ok(a / b)
     }
@@ -74,7 +74,7 @@ pub fn sum_each_tsfn(values: Vec<i32>, on_step: napi_oop::ThreadsafeFunction<i32
     let mut total = 0;
     for v in values {
         total += v;
-        on_step.call(total, NonBlocking);
+        on_step.call(Ok(total), NonBlocking);
     }
     total
 }
@@ -106,9 +106,9 @@ pub fn read_external(handle: napi_oop::External<i32>) -> i32 {
 
 /// Mints an External but buries it in a struct — must be rejected, since the TS
 /// finalizer only reaches top-level handles and a nested one would leak.
-#[derive(Serialize, Deserialize)]
+#[napi(object)]
 pub struct Wrapped {
-    inner: napi_oop::External<i32>,
+    pub inner: napi_oop::External<i32>,
 }
 
 #[napi]
@@ -274,15 +274,15 @@ fn manifest_flags_async_from_keyword_not_return_type() {
     assert!(!sync.is_async);
 }
 
-/// Records every callback invocation, plus any released handles.
+/// Records every callback invocation (raw args), plus any released handles.
 struct RecordingCallbacks {
-    steps: std::sync::Mutex<Vec<i64>>,
+    calls: std::sync::Mutex<Vec<Vec<Value>>>,
     released: std::sync::Mutex<Vec<u64>>,
 }
 
 impl registry::Callbacks for RecordingCallbacks {
     fn invoke(&self, _handle: u64, args: Vec<Value>) {
-        self.steps.lock().unwrap().push(args[0].as_i64().unwrap());
+        self.calls.lock().unwrap().push(args);
     }
     fn release(&self, handle: u64) {
         self.released.lock().unwrap().push(handle);
@@ -291,7 +291,7 @@ impl registry::Callbacks for RecordingCallbacks {
 
 fn record(function: &str) -> (Message, std::sync::Arc<RecordingCallbacks>) {
     let cb = std::sync::Arc::new(RecordingCallbacks {
-        steps: std::sync::Mutex::new(Vec::new()),
+        calls: std::sync::Mutex::new(Vec::new()),
         released: std::sync::Mutex::new(Vec::new()),
     });
     let dyn_cb: std::sync::Arc<dyn registry::Callbacks> = cb.clone();
@@ -319,7 +319,17 @@ fn callback_impl_fn_invokes_through_callbacks_table() {
         Message::Response(r) => assert_eq!(r.result.as_i64(), Some(60)),
         other => panic!("expected response, got {other:?}"),
     }
-    assert_eq!(*cb.steps.lock().unwrap(), vec![10, 30, 60]);
+    // An `impl Fn(T)` callback delivers a single `(value)` argument, like a
+    // vanilla napi sync callback / a `CalleeHandled = false` threadsafe function.
+    let calls = cb.calls.lock().unwrap();
+    let steps: Vec<i64> = calls
+        .iter()
+        .map(|a| {
+            assert_eq!(a.len(), 1, "impl Fn callback should deliver one arg");
+            a[0].as_i64().unwrap()
+        })
+        .collect();
+    assert_eq!(steps, vec![10, 30, 60]);
 }
 
 #[test]
@@ -329,7 +339,18 @@ fn threadsafe_function_invokes_through_callbacks_table() {
         Message::Response(r) => assert_eq!(r.result.as_i64(), Some(60)),
         other => panic!("expected response, got {other:?}"),
     }
-    assert_eq!(*cb.steps.lock().unwrap(), vec![10, 30, 60]);
+    // A default (`CalleeHandled`) threadsafe function delivers `(err, value)`,
+    // matching vanilla napi: a leading nil error slot then the value.
+    let calls = cb.calls.lock().unwrap();
+    let steps: Vec<i64> = calls
+        .iter()
+        .map(|a| {
+            assert_eq!(a.len(), 2, "tsfn callback should deliver (err, value)");
+            assert!(a[0].is_nil(), "leading error slot should be null on success");
+            a[1].as_i64().unwrap()
+        })
+        .collect();
+    assert_eq!(steps, vec![10, 30, 60]);
 }
 
 #[test]
@@ -348,14 +369,20 @@ fn callback_handle_is_released_when_closure_drops() {
 #[test]
 fn callback_manifest_renders_ts_fn_type() {
     let m = napi_oop::manifest::manifest();
-    for name in ["sum_each", "sum_each_tsfn"] {
-        let f = m.functions.iter().find(|f| f.rust_name == name).unwrap();
-        assert_eq!(
-            f.params,
-            vec!["Array<number>", "(a0:number)=>void"],
-            "{name}"
-        );
-    }
+    // The `impl Fn` sugar surfaces a plain single-arg callback...
+    let sum_each = m.functions.iter().find(|f| f.rust_name == "sum_each").unwrap();
+    assert_eq!(sum_each.params, vec!["Array<number>", "(a0:number)=>void"]);
+    // ...while an explicit `ThreadsafeFunction<T>` is `CalleeHandled`, so — exactly
+    // like vanilla napi-rs — it renders an error-first `(err, value)` signature.
+    let sum_each_tsfn = m
+        .functions
+        .iter()
+        .find(|f| f.rust_name == "sum_each_tsfn")
+        .unwrap();
+    assert_eq!(
+        sum_each_tsfn.params,
+        vec!["Array<number>", "(err:Error | null,a0:number)=>void"]
+    );
 }
 
 #[test]

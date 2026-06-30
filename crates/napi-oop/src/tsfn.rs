@@ -5,11 +5,27 @@
 //!
 //! The `impl Fn(..)` sugar and this explicit type are the two callback forms
 //! napi-rs supports; the macro recognises both and decodes the same wire handle.
+//!
+//! Faithfulness to napi v3: the wrapper carries the same generic shape as napi's
+//! own `ThreadsafeFunction` — including the `CalleeHandled` const flag. A default
+//! `ThreadsafeFunction<T>` is `CalleeHandled = true`, so its `call` takes a
+//! `Result<T, _>` and delivers `(err, value)` to the JS callback, exactly as
+//! vanilla napi does; a `CalleeHandled = false` one takes a bare `T` and delivers
+//! just `(value)`. Both doors (in-proc real napi and out-of-proc wire) follow the
+//! same convention, so observable behaviour matches traditional napi.
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use napi::bindgen_prelude::{
+    FromNapiValue, JsValuesTupleIntoVec, TypeName, Unknown, ValidateNapiValue,
+};
+use napi::sys;
+use napi::threadsafe_function::{
+    ThreadsafeFunction as RealTsfn, ThreadsafeFunctionCallMode as RealCallMode,
+};
+use napi::Status;
 use serde::Serialize;
 
 use crate::codec::HandleId;
@@ -73,8 +89,8 @@ impl Drop for CallbackHandle {
 }
 
 /// How a [`ThreadsafeFunction`] call delivers, mirroring napi's enum. Out-of-proc
-/// calls are always queued, so both modes behave the same here; the variant is
-/// accepted for source compatibility with napi-rs.
+/// calls are always queued, so both modes behave the same here; in-proc the
+/// variant is forwarded to napi's own call mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadsafeFunctionCallMode {
     /// Queue even if the buffer is full (napi default; always succeeds here).
@@ -83,68 +99,216 @@ pub enum ThreadsafeFunctionCallMode {
     Blocking,
 }
 
+impl From<ThreadsafeFunctionCallMode> for RealCallMode {
+    fn from(mode: ThreadsafeFunctionCallMode) -> Self {
+        match mode {
+            ThreadsafeFunctionCallMode::NonBlocking => RealCallMode::NonBlocking,
+            ThreadsafeFunctionCallMode::Blocking => RealCallMode::Blocking,
+        }
+    }
+}
+
+/// The backing of a [`ThreadsafeFunction`]: a peer handle on the out-of-process
+/// wire path, or a real napi threadsafe function on the in-process napi path.
+/// One annotated source produces both; which variant a value carries depends on
+/// how the cdylib was loaded (Node directly vs. a thin provider exe).
+///
+/// The real napi v3 `ThreadsafeFunction` is not `Clone`, so it is held behind an
+/// `Arc`: cloning the wrapper shares the one underlying napi handle, which is
+/// released when the last clone drops — matching napi's own ref-counted lifetime.
+/// `CallJsBackArgs` is forced to `T` (the only shape napi's `FromNapiValue` /
+/// `call` impls use), so it is not a separate parameter of `Inner`.
+enum Inner<T, R, S, const A: bool, const W: bool, const M: usize>
+where
+    T: JsValuesTupleIntoVec + 'static,
+    R: FromNapiValue + 'static,
+    S: AsRef<str> + From<Status>,
+{
+    /// Out-of-process: the peer's JS callback, fired over the socket.
+    Wire(Arc<CallbackHandle>),
+    /// In-process: a real napi threadsafe function, fired through N-API.
+    Real(Arc<RealTsfn<T, R, T, S, A, W, M>>),
+}
+
+impl<T, R, S, const A: bool, const W: bool, const M: usize> Clone for Inner<T, R, S, A, W, M>
+where
+    T: JsValuesTupleIntoVec + 'static,
+    R: FromNapiValue + 'static,
+    S: AsRef<str> + From<Status>,
+{
+    fn clone(&self) -> Self {
+        match self {
+            Inner::Wire(h) => Inner::Wire(Arc::clone(h)),
+            Inner::Real(r) => Inner::Real(Arc::clone(r)),
+        }
+    }
+}
+
 /// A peer-held JS callback that can be stored and invoked later from any thread.
 /// Construct one only from generated glue. Cheap to clone; firing is one-way.
 /// The peer handle is released when the last clone drops.
 ///
-/// The generic arity mirrors napi-rs's `ThreadsafeFunction`, which carries a
-/// pile of type/const parameters (return type, call-args type, error-status
-/// type, callee-handled / weak flags, max-queue-size) to tune the in-process
-/// N-API call. Out-of-process only the payload type `T` matters — calls are
-/// always queued, fire-and-forget — so every other parameter is a defaulted
-/// phantom kept purely for source compatibility, letting the 1-, 5-, and
-/// 7-argument forms in existing source all resolve.
+/// The generic arity mirrors napi-rs's `ThreadsafeFunction`: the payload type
+/// `T`, the JS return type `Return`, the callback-args type `CallJsBackArgs`, the
+/// `ErrorStatus`, and the `CalleeHandled` / `Weak` / `MaxQueueSize` const flags.
+/// `CalleeHandled` is the one that changes the `call` signature (see the two
+/// `call` impls below); the others tune the in-process N-API call and are inert
+/// out-of-process, where calls are always queued fire-and-forget.
 pub struct ThreadsafeFunction<
-    T,
-    Return = (),
-    CallJsBackArgs = (),
-    ErrorStatus = (),
+    T: 'static,
+    Return = Unknown<'static>,
+    CallJsBackArgs = T,
+    ErrorStatus = Status,
     const CALLEE_HANDLED: bool = true,
     const WEAK: bool = false,
     const MAX_QUEUE_SIZE: usize = 0,
-> {
-    inner: Arc<CallbackHandle>,
-    _marker: PhantomData<fn(T, Return, CallJsBackArgs, ErrorStatus)>,
+>
+where
+    T: JsValuesTupleIntoVec,
+    Return: FromNapiValue + 'static,
+    ErrorStatus: AsRef<str> + From<Status>,
+{
+    inner: Inner<T, Return, ErrorStatus, CALLEE_HANDLED, WEAK, MAX_QUEUE_SIZE>,
+    _marker: PhantomData<fn(CallJsBackArgs)>,
 }
 
 impl<T, R, C, S, const A: bool, const W: bool, const M: usize>
     ThreadsafeFunction<T, R, C, S, A, W, M>
+where
+    T: JsValuesTupleIntoVec + 'static,
+    R: FromNapiValue + 'static,
+    S: AsRef<str> + From<Status>,
 {
-    /// Build from a decoded handle and the shared callback sink. Called by the
-    /// `#[napi]` macro; not part of the user surface.
+    /// Build from a decoded handle and the shared callback sink (out-of-process
+    /// path). Called by the `#[napi]` macro; not part of the user surface.
     #[doc(hidden)]
     pub fn __new(handle: HandleId, sink: Arc<dyn Callbacks>) -> Self {
         Self {
-            inner: CallbackHandle::new(handle, sink),
+            inner: Inner::Wire(CallbackHandle::new(handle, sink)),
             _marker: PhantomData,
         }
     }
 }
 
-impl<T: Serialize, R, C, S, const A: bool, const W: bool, const M: usize>
-    ThreadsafeFunction<T, R, C, S, A, W, M>
+impl<T, R, C, S, const W: bool, const M: usize> ThreadsafeFunction<T, R, C, S, true, W, M>
+where
+    T: JsValuesTupleIntoVec + Serialize + 'static,
+    R: FromNapiValue + 'static,
+    S: AsRef<str> + From<Status>,
 {
-    /// Fire the callback with `value`. Non-blocking and result-less, matching
-    /// napi's default: the value is queued to the peer's event loop. Returns
-    /// `Status::Ok` for source compatibility — napi-rs's `call` returns a
-    /// `Status` that callers compare against `Status::Ok`; the queue here cannot
-    /// fail synchronously, so the call always succeeds.
-    pub fn call(&self, value: T, _mode: ThreadsafeFunctionCallMode) -> crate::shim::Status {
-        if let Ok(arg) = crate::wire::to_wire(&value) {
-            self.inner.invoke(vec![arg]);
+    /// Fire the callback the napi default (`CalleeHandled`) way: the JS callback
+    /// receives `(err, value)`. `Ok(v)` delivers `(null, v)`; `Err(e)` delivers
+    /// the error as the first argument. The value type is napi's own
+    /// `Result<T, Error<S>>`, so source written for vanilla napi (`.call(Ok(v),
+    /// mode)`) compiles unchanged. Non-blocking and result-less, matching napi:
+    /// the value is queued (out-of-process onto the peer's event loop; in-process
+    /// onto the host's). Returns napi's own `Status` — the out-of-process queue
+    /// cannot fail synchronously, so it returns `Status::Ok`.
+    pub fn call(
+        &self,
+        value: Result<T, napi::Error<S>>,
+        mode: ThreadsafeFunctionCallMode,
+    ) -> crate::shim::Status {
+        match &self.inner {
+            Inner::Wire(handle) => {
+                match value {
+                    Ok(v) => {
+                        if let Ok(arg) = crate::wire::to_wire(&v) {
+                            // (null, value): a leading nil error slot mirrors
+                            // vanilla napi's CalleeHandled `(err, value)` shape.
+                            handle.invoke(vec![rmpv::Value::Nil, arg]);
+                        }
+                    }
+                    Err(err) => {
+                        let msg = err.reason.clone();
+                        if let Ok(arg) = crate::wire::to_wire(&msg) {
+                            handle.invoke(vec![arg]);
+                        }
+                    }
+                }
+                crate::shim::Status::Ok
+            }
+            Inner::Real(real) => real.call(value, mode.into()),
         }
-        crate::shim::Status::Ok
+    }
+}
+
+impl<T, R, C, S, const W: bool, const M: usize> ThreadsafeFunction<T, R, C, S, false, W, M>
+where
+    T: JsValuesTupleIntoVec + Serialize + 'static,
+    R: FromNapiValue + 'static,
+    S: AsRef<str> + From<Status>,
+{
+    /// Fire the callback the `CalleeHandled = false` way: the JS callback receives
+    /// just `(value)`, with no leading error slot. Non-blocking and result-less.
+    pub fn call(&self, value: T, mode: ThreadsafeFunctionCallMode) -> crate::shim::Status {
+        match &self.inner {
+            Inner::Wire(handle) => {
+                if let Ok(arg) = crate::wire::to_wire(&value) {
+                    handle.invoke(vec![arg]);
+                }
+                crate::shim::Status::Ok
+            }
+            Inner::Real(real) => real.call(value, mode.into()),
+        }
     }
 }
 
 impl<T, R, C, S, const A: bool, const W: bool, const M: usize> Clone
     for ThreadsafeFunction<T, R, C, S, A, W, M>
+where
+    T: JsValuesTupleIntoVec + 'static,
+    R: FromNapiValue + 'static,
+    S: AsRef<str> + From<Status>,
 {
     fn clone(&self) -> Self {
         Self {
-            inner: Arc::clone(&self.inner),
+            inner: self.inner.clone(),
             _marker: PhantomData,
         }
+    }
+}
+
+// In-proc napi bridge: decode a JS function param into the real-backed variant so
+// the same `ThreadsafeFunction<T>` type works when the cdylib is loaded by Node.
+impl<T, R, C, S, const A: bool, const W: bool, const M: usize> TypeName
+    for ThreadsafeFunction<T, R, C, S, A, W, M>
+where
+    T: JsValuesTupleIntoVec + 'static,
+    R: FromNapiValue + 'static,
+    S: AsRef<str> + From<Status>,
+{
+    fn type_name() -> &'static str {
+        "Function"
+    }
+    fn value_type() -> napi::ValueType {
+        napi::ValueType::Function
+    }
+}
+
+impl<T, R, C, S, const A: bool, const W: bool, const M: usize> ValidateNapiValue
+    for ThreadsafeFunction<T, R, C, S, A, W, M>
+where
+    T: JsValuesTupleIntoVec + 'static,
+    R: FromNapiValue + 'static,
+    S: AsRef<str> + From<Status>,
+{
+}
+
+impl<T, R, C, S, const A: bool, const W: bool, const M: usize> FromNapiValue
+    for ThreadsafeFunction<T, R, C, S, A, W, M>
+where
+    T: JsValuesTupleIntoVec + 'static,
+    R: FromNapiValue + 'static,
+    S: AsRef<str> + From<Status>,
+{
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<Self> {
+        let real =
+            unsafe { RealTsfn::<T, R, T, S, A, W, M>::from_napi_value(env, napi_val)? };
+        Ok(Self {
+            inner: Inner::Real(Arc::new(real)),
+            _marker: PhantomData,
+        })
     }
 }
 
@@ -155,6 +319,10 @@ impl<T, R, C, S, const A: bool, const W: bool, const M: usize> Clone
 /// the macro can't recognise syntactically.
 impl<'de, T, R, C, S, const A: bool, const W: bool, const M: usize> serde::Deserialize<'de>
     for ThreadsafeFunction<T, R, C, S, A, W, M>
+where
+    T: JsValuesTupleIntoVec + 'static,
+    R: FromNapiValue + 'static,
+    S: AsRef<str> + From<Status>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

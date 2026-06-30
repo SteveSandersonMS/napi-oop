@@ -5,8 +5,11 @@ members = [
     "crates/napi-oop-macro",
     "crates/napi-oop-facade",
     "examples/add-numbers",
+    "examples/add-numbers/provider",
     "examples/tokio-fetch",
+    "examples/tokio-fetch/provider",
     "tests/e2e/fixture",
+    "tests/e2e/provider",
 ]
 exclude = [
     "examples/native-add",

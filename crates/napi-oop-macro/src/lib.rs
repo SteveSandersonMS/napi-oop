@@ -1,51 +1,37 @@
 //! The `#[napi]` attribute macro for `napi-oop`.
 //!
-//! The same annotated source builds two ways, selected by cargo feature:
+//! One annotated source produces a **dual-ABI** result:
 //!
-//! - **`in-proc`** (default): behave like a normal in-process napi-rs build.
-//!   For now the item is passed through unchanged (a real build pairs this crate
-//!   with napi-rs's own `#[napi]`); a later phase delegates explicitly.
-//! - **`out-of-proc`**: emit out-of-process remoting glue — a serde/wire-codec
-//!   dispatch thunk plus a registry entry the runtime advertises to Node.
+//! - The real napi-rs `#[napi]` ABI is emitted (by delegating to
+//!   `::napi_derive::napi`) so the cdylib loads in-process in Node as a normal
+//!   napi addon.
+//! - Out-of-process remoting glue is emitted alongside — a serde/wire-codec
+//!   dispatch thunk plus a registry entry the runtime advertises to a Node child
+//!   — so the same cdylib, loaded by a thin Rust provider exe, serves Node
+//!   out-of-process.
 //!
-//! The user's source is identical in both modes; only the generated glue differs.
+//! The user's source is identical; the macro generates both halves. Functions
+//! with an `impl Fn(..)` parameter (which napi-derive cannot accept) get a
+//! generated in-proc adapter taking a `ThreadsafeFunction` instead.
 
 use proc_macro::TokenStream;
 
-/// Drop-in replacement for napi-rs's `#[napi]`. See the crate docs for the
-/// in-proc vs out-of-proc build modes.
+/// Drop-in replacement for napi-rs's `#[napi]`. Emits the real napi ABI plus the
+/// out-of-process wire glue from one annotated item. See the crate docs.
 #[proc_macro_attribute]
-pub fn napi(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    #[cfg(feature = "out-of-proc")]
-    {
-        out_of_proc::expand(_attr, item)
-    }
-    #[cfg(not(feature = "out-of-proc"))]
-    {
-        in_proc::expand(_attr, item)
-    }
+pub fn napi(attr: TokenStream, item: TokenStream) -> TokenStream {
+    dual::expand(attr, item)
 }
 
-#[cfg(not(feature = "out-of-proc"))]
-mod in_proc {
-    use proc_macro::TokenStream;
-
-    /// In-process mode. Pass through; the facade re-exports napi-rs's real
-    /// `#[napi]` so source produces a native `.node`.
-    pub(super) fn expand(_attr: TokenStream, item: TokenStream) -> TokenStream {
-        item
-    }
-}
-
-#[cfg(feature = "out-of-proc")]
-mod out_of_proc {
+mod dual {
     use proc_macro::TokenStream;
     use quote::{format_ident, quote, ToTokens};
     use syn::{parse_macro_input, FnArg, ImplItem, Item, ItemFn, ItemImpl, ItemStruct, PatType};
 
-    /// Out-of-process mode. Free fns get a dispatch thunk + registration; class
-    /// `impl` blocks get a thunk per method/constructor (each keyed `Class.method`)
-    /// plus class metadata; plain structs/objects pass through (serde carries them).
+    /// Dual-emit entry. Free fns get the real napi ABI (or an in-proc adapter for
+    /// `impl Fn` params) plus a dispatch thunk + registration; class `impl` blocks
+    /// get napi-derive's class glue plus a thunk per method/constructor; plain
+    /// structs/objects/enums get napi-derive plus serde for the wire.
     pub(super) fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
         // `#[napi(object)]` marks a plain value struct that crosses the boundary
         // by serde; everything else dispatches on the item kind.
@@ -54,18 +40,20 @@ mod out_of_proc {
             .split(|c: char| !c.is_alphanumeric())
             .any(|t| t == "object");
         let is_string_enum = attr_str.contains("string_enum");
-        let js_name = js_name_from_tokens(attr);
+        let js_name = js_name_from_tokens(attr.clone());
+        let attr2: proc_macro2::TokenStream = attr.into();
         let parsed = parse_macro_input!(item as Item);
         match parsed {
-            Item::Fn(func) => expand_fn(func, js_name),
-            Item::Impl(imp) => expand_impl(imp),
-            Item::Struct(s) if is_object => expand_object(s),
-            Item::Struct(s) => expand_class_struct(s, js_name),
+            Item::Fn(func) => expand_fn(func, js_name, attr2),
+            Item::Impl(imp) => expand_impl(imp, attr2),
+            Item::Struct(s) if is_object => expand_object(s, attr2),
+            Item::Struct(s) => expand_class_struct(s, js_name, attr2),
             // `#[napi(string_enum)]`: carried by serde as a string. Inject the
             // missing (de)serialization derives. Plain (int) `#[napi]` enums keep
-            // napi-rs's numeric repr and pass through untouched.
-            Item::Enum(e) if is_string_enum => expand_enum(e),
-            other => quote!(#other).into(),
+            // napi-rs's numeric repr; both still get the real napi ABI.
+            Item::Enum(e) if is_string_enum => expand_enum(e, attr2),
+            Item::Enum(e) => quote!(#[::napi_derive::napi(#attr2)] #e).into(),
+            other => quote!(#[::napi_derive::napi(#attr2)] #other).into(),
         }
     }
 
@@ -116,7 +104,7 @@ mod out_of_proc {
     /// serde derives (camelCase fields, matching napi-rs's JS field naming) so the
     /// struct round-trips over the wire, and register its field shape so the TS
     /// generator emits a matching `interface` instead of `unknown`.
-    fn expand_object(mut item: ItemStruct) -> TokenStream {
+    fn expand_object(mut item: ItemStruct, attr2: proc_macro2::TokenStream) -> TokenStream {
         let name = item.ident.to_string();
 
         // Per field: strip napi-rs's `#[napi(..)]` (a non-existent attribute in
@@ -168,7 +156,10 @@ mod out_of_proc {
                             }
                             Ok(())
                         });
-                        false
+                        // Keep the field's `#[napi(..)]`: napi-derive (the active
+                        // attribute macro once we attach it below) consumes it for
+                        // the in-proc ABI before the serde derives run.
+                        true
                     } else {
                         true
                     }
@@ -189,6 +180,7 @@ mod out_of_proc {
         inject_serde(&mut item.attrs, true);
 
         let expanded = quote! {
+            #[::napi_derive::napi(#attr2)]
             #item
 
             const _: () = {
@@ -204,12 +196,19 @@ mod out_of_proc {
         expanded.into()
     }
 
-    fn expand_class_struct(item: ItemStruct, js_name: Option<String>) -> TokenStream {
-        let Some(js_name) = js_name else {
-            return quote!(#item).into();
-        };
+    fn expand_class_struct(
+        item: ItemStruct,
+        js_name: Option<String>,
+        attr2: proc_macro2::TokenStream,
+    ) -> TokenStream {
         let rust_name = item.ident.to_string();
+        // A struct without `js_name` still gets the real napi class ABI; only the
+        // codegen rename registration is conditional.
+        let Some(js_name) = js_name else {
+            return quote!(#[::napi_derive::napi(#attr2)] #item).into();
+        };
         quote! {
+            #[::napi_derive::napi(#attr2)]
             #item
 
             const _: () = {
@@ -231,12 +230,9 @@ mod out_of_proc {
     /// and `rename_all` is left to the source (its `string_enum = "…"` case maps
     /// to a matching `#[serde(rename_all = "…")]`), defaulting to verbatim variant
     /// names like napi-rs.
-    fn expand_enum(mut item: syn::ItemEnum) -> TokenStream {
-        for variant in &mut item.variants {
-            variant.attrs.retain(|attr| !attr.path().is_ident("napi"));
-        }
+    fn expand_enum(mut item: syn::ItemEnum, attr2: proc_macro2::TokenStream) -> TokenStream {
         inject_serde(&mut item.attrs, false);
-        quote! { #item }.into()
+        quote! { #[::napi_derive::napi(#attr2)] #item }.into()
     }
 
     /// Inspect a type's existing container attributes and append whichever serde
@@ -308,7 +304,11 @@ mod out_of_proc {
         }
     }
 
-    fn expand_fn(func: ItemFn, js_name: Option<String>) -> TokenStream {
+    fn expand_fn(
+        func: ItemFn,
+        js_name: Option<String>,
+        attr2: proc_macro2::TokenStream,
+    ) -> TokenStream {
         let fn_name = func.sig.ident.clone();
         let fn_name_str = fn_name.to_string();
         let js_name_str = js_name.unwrap_or_default();
@@ -351,7 +351,7 @@ mod out_of_proc {
                 if let Some((inputs, _)) = fn_trait_sig(ty) {
                     ts_fn_type(&inputs)
                 } else if let Some(inner) = tsfn_inner(ty) {
-                    ts_fn_type(std::slice::from_ref(&inner))
+                    ts_tsfn_type(&inner)
                 } else {
                     quote!(#ty).to_string().split_whitespace().collect()
                 }
@@ -392,8 +392,29 @@ mod out_of_proc {
         // by the return-encoder, which mints class instances and serializes the rest.
         let encode_ret = encode_owned(&ret_ok_type);
 
+        // In-proc napi ABI. Some param shapes napi-derive can't accept verbatim:
+        // an `impl Fn(..)` trait object, or a `&External<T>` borrow (napi-rs has no
+        // `FromNapiRef for External`). For those we emit the plain fn plus a thin
+        // adapter that takes napi-friendly params (a real `ThreadsafeFunction` / an
+        // owned `External`) and forwards them. Every other fn gets napi-derive
+        // attached straight onto it.
+        let needs_adapter = func.sig.inputs.iter().any(|a| {
+            matches!(a, FnArg::Typed(pt)
+                if fn_trait_sig(&pt.ty).is_some() || external_ref_inner(&pt.ty).is_some())
+        });
+        let ip_js_name = if js_name_str.is_empty() {
+            camel(&fn_name_str)
+        } else {
+            js_name_str.clone()
+        };
+        let napi_abi = if needs_adapter {
+            build_inproc_fn_adapter(&func, &ip_js_name)
+        } else {
+            quote! { #[::napi_derive::napi(#attr2)] #func }
+        };
+
         let expanded = quote! {
-            #func
+            #napi_abi
 
             const _: () = {
                 fn __napi_oop_dispatch(
@@ -428,12 +449,128 @@ mod out_of_proc {
         expanded.into()
     }
 
-    /// A `#[napi] impl Class { … }`: one dispatch thunk per `#[napi]` method,
+    /// Build the in-proc napi adapter for a free fn whose signature napi-derive
+    /// can't accept verbatim: an `impl Fn(T)` callback (forwarded as a real
+    /// `ThreadsafeFunction<T>`) or a `&External<T>` borrow (taken by value and
+    /// lent). Returns the plain original fn plus the napi-annotated adapter.
+    fn build_inproc_fn_adapter(func: &ItemFn, ip_js_name: &str) -> proc_macro2::TokenStream {
+        let fn_name = func.sig.ident.clone();
+        let adapter_ident = format_ident!("__napi_oop_ip_{}", fn_name);
+        let asyncness = &func.sig.asyncness;
+        let is_async = func.sig.asyncness.is_some();
+        let output = &func.sig.output;
+
+        let mut params = Vec::new();
+        let mut call_args = Vec::new();
+        for input in &func.sig.inputs {
+            match input {
+                FnArg::Typed(pt) => {
+                    let ident = match &*pt.pat {
+                        syn::Pat::Ident(p) => p.ident.clone(),
+                        _ => {
+                            return syn::Error::new_spanned(
+                                &pt.pat,
+                                "#[napi] in-proc adapter requires named parameters",
+                            )
+                            .to_compile_error();
+                        }
+                    };
+                    if let Some((inputs, _out)) = fn_trait_sig(&pt.ty) {
+                        if inputs.len() != 1 {
+                            return syn::Error::new_spanned(
+                                &pt.ty,
+                                "#[napi] callbacks support a single-argument `impl Fn(T)` only",
+                            )
+                            .to_compile_error();
+                        }
+                        let cb_arg = &inputs[0];
+                        if is_async {
+                            // An async fn may invoke the callback from a worker
+                            // thread (the future runs off the JS thread), so the
+                            // in-proc adapter must use a real `ThreadsafeFunction`
+                            // — exactly what traditional napi requires for a
+                            // cross-thread callback. Calls queue onto the host's
+                            // event loop (fire-and-forget), matching napi's TSFN.
+                            // `CalleeHandled = false` so the JS callback receives
+                            // just `(value)` — consistent with the sync `impl Fn`
+                            // form, which delivers a single argument inline.
+                            params.push(quote! {
+                                #ident: ::napi_oop::ThreadsafeFunction<
+                                    #cb_arg,
+                                    ::napi::bindgen_prelude::Unknown<'static>,
+                                    #cb_arg,
+                                    ::napi::Status,
+                                    false,
+                                >
+                            });
+                            call_args.push(quote! {
+                                move |__cb0: #cb_arg| {
+                                    #ident.call(
+                                        __cb0,
+                                        ::napi_oop::ThreadsafeFunctionCallMode::NonBlocking,
+                                    );
+                                }
+                            });
+                        } else {
+                            // A sync fn runs on the JS thread, so the callback is
+                            // invoked inline during the call. Traditional napi
+                            // models this as a synchronous `Function` (called on
+                            // the same thread, delivered before the call returns),
+                            // NOT a `ThreadsafeFunction` (which would defer the
+                            // call until the JS thread next yields — diverging from
+                            // both traditional napi and the out-of-process path,
+                            // where the blocking provider delivers callbacks before
+                            // the sync call returns).
+                            params.push(quote! {
+                                #ident: ::napi::bindgen_prelude::Function<#cb_arg, ()>
+                            });
+                            call_args.push(quote! {
+                                move |__cb0: #cb_arg| {
+                                    let _ = #ident.call(__cb0);
+                                }
+                            });
+                        }
+                    } else if let Some(owned) = external_ref_inner(&pt.ty) {
+                        // napi-rs has no `FromNapiRef for External`; take the handle
+                        // by value (decoded via `FromNapiValue`) and lend it.
+                        params.push(quote! { #ident: #owned });
+                        call_args.push(quote! { &#ident });
+                    } else {
+                        params.push(quote! { #input });
+                        call_args.push(quote! { #ident });
+                    }
+                }
+                FnArg::Receiver(r) => {
+                    return syn::Error::new_spanned(
+                        r,
+                        "#[napi] out-of-proc mode does not support methods (`self`) yet",
+                    )
+                    .to_compile_error();
+                }
+            }
+        }
+
+        let await_tok = if asyncness.is_some() {
+            quote!(.await)
+        } else {
+            quote!()
+        };
+
+        quote! {
+            #func
+
+            #[::napi_derive::napi(js_name = #ip_js_name)]
+            pub #asyncness fn #adapter_ident(#(#params),*) #output {
+                #fn_name(#(#call_args),*)#await_tok
+            }
+        }
+    }
+
     /// keyed `Class.method`. The constructor builds the value into the object
     /// slab and returns its top-level handle; methods take the handle as the
     /// first wire arg, borrow the value, and call. Class metadata is registered
     /// so the generator emits a TS class proxy.
-    fn expand_impl(imp: ItemImpl) -> TokenStream {
+    fn expand_impl(imp: ItemImpl, attr2: proc_macro2::TokenStream) -> TokenStream {
         let self_ty = &imp.self_ty;
         let class_name = match &**self_ty {
             syn::Type::Path(p) => p.path.segments.last().unwrap().ident.to_string(),
@@ -465,14 +602,10 @@ mod out_of_proc {
                 is_getter,
             ));
         }
-        // Re-emit the impl with inner `#[napi]` attrs stripped (they are not real
-        // outer-attribute macros; we generate all glue from this single pass).
-        let mut clean = imp.clone();
-        for item in &mut clean.items {
-            if let ImplItem::Fn(m) = item {
-                m.attrs.retain(|a| !a.path().is_ident("napi"));
-            }
-        }
+        // Re-emit the impl untouched with napi-derive attached: it owns the
+        // in-proc class ABI and consumes the inner `#[napi(constructor/getter/
+        // js_name)]` helper attrs (which we also read above to drive the wire
+        // thunks). We must NOT strip those attrs anymore — napi-derive needs them.
         // A class instance crosses the wire as an external handle: any fn returning
         // a class (its own, another class, or a free-fn factory) mints the owned
         // instance into the slab via the return-encoder. Marking the type
@@ -482,7 +615,14 @@ mod out_of_proc {
         let class_marker = quote! {
             impl ::napi_oop::types::NapiClass for #self_ty {}
         };
-        quote! { #clean #class_marker #(#thunks)* }.into()
+        quote! {
+            #[::napi_derive::napi(#attr2)]
+            #imp
+
+            #class_marker
+            #(#thunks)*
+        }
+        .into()
     }
 
     /// Build the dispatch thunk + registration for one constructor/method/getter.
@@ -552,8 +692,24 @@ mod out_of_proc {
         // Receiver count: a constructor has none; methods take handle first.
         let takes_self = matches!(method.sig.inputs.first(), Some(FnArg::Receiver(_)));
         let m_ident2 = m_ident.clone();
+        // napi-rs requires `&mut self` async methods to be `unsafe`; honour that
+        // keyword on the wire side too by wrapping the call. `block_on` then drives
+        // the (already produced) future for async methods.
+        let is_unsafe = method.sig.unsafety.is_some();
+        let wrap_call = |inner: proc_macro2::TokenStream| -> proc_macro2::TokenStream {
+            let inner = if is_unsafe {
+                quote!(unsafe { #inner })
+            } else {
+                inner
+            };
+            if is_async {
+                quote!(::napi_oop::block_on(#inner))
+            } else {
+                inner
+            }
+        };
         let body = if is_ctor {
-            let call = quote!(#self_ty::#m_ident2(#(#call_args),*));
+            let call = wrap_call(quote!(#self_ty::#m_ident2(#(#call_args),*)));
             let wrap = if ret_ok.is_some() {
                 quote!(match __ret {
                     Ok(v) => v,
@@ -571,11 +727,7 @@ mod out_of_proc {
                 ::core::result::Result::Ok(::napi_oop::wire::external_marker(__tok))
             }
         } else if takes_self {
-            let call = if is_async {
-                quote!(::napi_oop::block_on(__self.#m_ident2(#(#call_args),*)))
-            } else {
-                quote!(__self.#m_ident2(#(#call_args),*))
-            };
+            let call = wrap_call(quote!(__self.#m_ident2(#(#call_args),*)));
             // Move the owned return out of `with_object` first, then encode: the
             // encoder may mint into the slab (for class returns), which would
             // re-enter the slab mutex and deadlock if done inside the closure.
@@ -589,11 +741,7 @@ mod out_of_proc {
             }
         } else {
             // associated fn (static) — treat like a free fn
-            let call = if is_async {
-                quote!(::napi_oop::block_on(#self_ty::#m_ident2(#(#call_args),*)))
-            } else {
-                quote!(#self_ty::#m_ident2(#(#call_args),*))
-            };
+            let call = wrap_call(quote!(#self_ty::#m_ident2(#(#call_args),*)));
             let encode = encode_owned(&ret_ok);
             quote! { let mut __iter = __args.into_iter(); #(#decode)* let __ret = #call; #encode }
         };
@@ -634,7 +782,13 @@ mod out_of_proc {
             quote! {
                 match __ret {
                     ::core::result::Result::Ok(__v) => ::napi_oop::__napi_oop_encode_return!(__v),
-                    ::core::result::Result::Err(__e) => ::core::result::Result::Err(::std::string::ToString::to_string(&__e)),
+                    ::core::result::Result::Err(__e) => {
+                        // napi-derive requires the Err type to be `napi::Error`; on
+                        // the wire we surface the same `reason` string Node would
+                        // see thrown in-proc (not the `Display` "<Status>, reason").
+                        let __e: ::napi_oop::Error = ::core::convert::Into::into(__e);
+                        ::core::result::Result::Err(::std::clone::Clone::clone(&__e.reason))
+                    }
                 }
             }
         } else {
@@ -646,7 +800,7 @@ mod out_of_proc {
         if let Some((inputs, _)) = fn_trait_sig(ty) {
             ts_fn_type(&inputs)
         } else if let Some(inner) = tsfn_inner(ty) {
-            ts_fn_type(std::slice::from_ref(&inner))
+            ts_tsfn_type(&inner)
         } else {
             quote!(#ty).to_string().split_whitespace().collect()
         }
@@ -809,5 +963,15 @@ mod out_of_proc {
             })
             .collect();
         format!("({})=>()", params.join(","))
+    }
+
+    /// Render the TS type for an explicit `ThreadsafeFunction<T>` param. These are
+    /// `CalleeHandled` by default, so — exactly like vanilla napi-rs — the JS
+    /// callback is invoked error-first as `(err: Error | null, value: T) => void`.
+    /// The leading `err` param is encoded with the `__NapiCbErr` sentinel that the
+    /// manifest maps to `Error | null`.
+    fn ts_tsfn_type(inner: &syn::Type) -> String {
+        let value: String = quote!(#inner).to_string().split_whitespace().collect();
+        format!("(err:__NapiCbErr,a0:{value})=>()")
     }
 }

@@ -8,6 +8,10 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Real napi-rs: the unified value/callback types implement its `FromNapiValue`/
+# `ToNapiValue`/`TypeName`/`ValidateNapiValue` traits so `#[napi]` codegen accepts
+# them on the in-proc door, while their serde impls carry them on the wire door.
+napi = { version = "3", default-features = false, features = ["napi4", "napi6", "tokio_rt"] }
 interprocess = "2"
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
@@ -26,4 +30,9 @@ default = ["tokio"]
 tokio = ["dep:tokio"]
 
 [dev-dependencies]
-napi-oop-macro = { path = "../napi-oop-macro", features = ["out-of-proc"] }
+napi-oop-macro = { path = "../napi-oop-macro" }
+# The dual-emit macro expands to `::napi_derive::napi(..)`, whose generated code
+# references the real `napi` crate; the wire-glue regression tests therefore need
+# both in scope (the in-proc ABI links but is never invoked under `cargo test`).
+napi-derive = { version = "3", default-features = false }
+napi = { version = "3", default-features = false, features = ["napi4", "napi6", "tokio_rt"] }

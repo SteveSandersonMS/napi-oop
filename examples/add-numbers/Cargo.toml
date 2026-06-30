@@ -4,10 +4,21 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
-[[bin]]
-name = "add-numbers-provider"
-path = "src/main.rs"
+# The dual-ABI artifact: ONE cdylib that Node loads in-process as a normal napi
+# addon (real napi ABI) AND a thin Rust host (examples/add-numbers/provider)
+# dlopens to serve a Node child out-of-process via napi-oop. The provider entry
+# is exported as a C symbol the host exe resolves; see `add_numbers_provider_main`.
+[lib]
+name = "add_numbers_example"
+crate-type = ["cdylib"]
 
 [dependencies]
 napi-oop = { path = "../../crates/napi-oop" }
-napi = { package = "napi-oop-facade", path = "../../crates/napi-oop-facade", features = ["out-of-proc"] }
+napi = { package = "napi-oop-facade", path = "../../crates/napi-oop-facade" }
+# The dual-emit macro expands to `::napi_derive::napi(..)`, so the real
+# napi-derive must be in the dependency graph for the in-proc ABI to compile.
+napi-derive = { version = "3", default-features = false }
+
+[build-dependencies]
+napi-build = "2"
+
