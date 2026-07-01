@@ -39,6 +39,12 @@ inventory = "0.3"
 pollster = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
 
+# macOS needs `confstr(_CS_DARWIN_USER_TEMP_DIR)` to resolve the real per-user
+# temp dir for the transport socket without honoring `TMPDIR` overrides. Already
+# in the tree via `interprocess`, so this adds no build cost.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [features]
 # Tokio is on by default: the target workloads are async/tokio, so block_on
 # uses a shared multi-thread runtime (timers/IO work). Disable default features
