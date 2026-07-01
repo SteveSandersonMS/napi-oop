@@ -6,10 +6,9 @@
 // path and exports it to the child via the `NAPI_OOP_SOCKET` env var; the child
 // reads it and connects.
 
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, execFileSync, ChildProcess } from 'child_process';
 import { randomBytes } from 'crypto';
 import { connect as netConnect, createServer, Server, Socket } from 'net';
-import { tmpdir } from 'os';
 import { join } from 'path';
 import { unlink } from 'fs/promises';
 
@@ -45,13 +44,56 @@ export type ExternalObject = { readonly __napi_ext: number };
 /** Env var a parent uses to pass the named-socket path to a spawned child. */
 export const SOCKET_ENV = 'NAPI_OOP_SOCKET';
 
-/** Generate an unpredictable, platform-appropriate named-socket path. */
+/** Whether this platform binds the transport in the Linux *abstract namespace*
+ *  (an address with no filesystem entry) rather than a filesystem socket. */
+function usesAbstractNamespace(): boolean {
+  return process.platform === 'linux' || process.platform === 'android';
+}
+
+/** The real OS temp dir, deliberately ignoring the `TMPDIR`/`TMP`/`TEMP` env
+ *  vars that `os.tmpdir()` honors: a consumer's harness may repoint them at a
+ *  working directory, where the socket must never be created. Only reached on
+ *  macOS/BSD — Linux uses the abstract namespace and Windows a named pipe. */
+function realOsTempDir(): string {
+  if (process.platform === 'darwin') {
+    try {
+      // The OS-provisioned per-user temp dir (`/var/folders/…/T/`), resolved
+      // without consulting the environment.
+      const dir = execFileSync('getconf', ['DARWIN_USER_TEMP_DIR'], {
+        encoding: 'utf8',
+      }).trim();
+      if (dir) return dir;
+    } catch {
+      // Fall through to /tmp if getconf is unavailable.
+    }
+  }
+  return '/tmp';
+}
+
+/** Map the logical socket name to the address Node's `net` expects: an
+ *  abstract-namespace address (leading NUL) on Linux, otherwise the name as-is
+ *  (a filesystem socket path on macOS/BSD, a named-pipe path on Windows). */
+function socketAddress(name: string): string {
+  return usesAbstractNamespace() ? `\0${name}` : name;
+}
+
+/**
+ * Generate an unpredictable, platform-appropriate socket name.
+ *
+ * The name leaves no stray artifact in a directory a consumer might list:
+ * a named pipe on Windows and an abstract-namespace socket on Linux (both have
+ * no filesystem entry), and on macOS/BSD a socket file under the real OS temp
+ * dir (never a `TMPDIR`-overridden one).
+ */
 export function generateSocketPath(): string {
   const token = randomBytes(12).toString('hex');
   if (process.platform === 'win32') {
     return `\\\\.\\pipe\\napi-oop-${process.pid}-${token}`;
   }
-  return join(tmpdir(), `napi-oop-${process.pid}-${token}.sock`);
+  if (usesAbstractNamespace()) {
+    return `napi-oop-${process.pid}-${token}`;
+  }
+  return join(realOsTempDir(), `napi-oop-${process.pid}-${token}.sock`);
 }
 
 /**
@@ -72,7 +114,7 @@ export function connectFromEnv(role: Role = 'caller'): Promise<Peer> {
 /** Connect to a peer listening at `socketPath` and complete the handshake. */
 export function connectPath(socketPath: string, role: Role = 'caller'): Promise<Peer> {
   return new Promise((resolve, reject) => {
-    const socket = netConnect(socketPath);
+    const socket = netConnect(socketAddress(socketPath));
     socket.once('connect', () => {
       Peer.handshake(socket, role).then(resolve, reject);
     });
@@ -115,7 +157,7 @@ export function launchProvider(options: LaunchOptions): Promise<Provider> {
   return new Promise<Provider>((resolve, reject) => {
     server.on('error', reject);
 
-    server.listen(socketPath, () => {
+    server.listen(socketAddress(socketPath), () => {
       // Spawn the provider in its own process group (`detached`). On a console
       // Ctrl+C the terminal delivers SIGINT/CTRL_C_EVENT only to the foreground
       // group; an isolated provider does not receive it and stays alive while the
@@ -137,7 +179,9 @@ export function launchProvider(options: LaunchOptions): Promise<Provider> {
             peer.close();
             server.close();
             if (!child.killed) child.kill();
-            if (process.platform !== 'win32') {
+            // Only macOS/BSD create a filesystem socket to unlink; Linux uses
+            // the abstract namespace and Windows a named pipe (no file).
+            if (!usesAbstractNamespace() && process.platform !== 'win32') {
               await unlink(socketPath).catch(() => {});
             }
           };

@@ -12,8 +12,12 @@ use std::io::{self, Read, Write};
 
 use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::{
-    GenericFilePath, Listener, ListenerNonblockingMode, ListenerOptions, Stream,
+    Listener, ListenerNonblockingMode, ListenerOptions, Name, Stream,
 };
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+use interprocess::local_socket::GenericFilePath;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use interprocess::local_socket::GenericNamespaced;
 
 /// A bidirectional, ordered byte stream connecting the Node and Rust peers.
 ///
@@ -59,16 +63,33 @@ impl NamedSocketListener {
     }
 }
 
-/// Bind a listener at the given filesystem socket path (Unix) / pipe path
-/// (Windows).
+/// Build a platform-appropriate local-socket [`Name`] from the wire string.
+///
+/// On Linux the string is a bare name bound in the *abstract namespace*
+/// (leading-NUL address, no filesystem entry); everywhere else it is a
+/// filesystem socket path (macOS/BSD) or named-pipe path (Windows). Both peers
+/// run on the same OS, so the parent and child always agree on the encoding.
+fn to_name(name: &str) -> io::Result<Name<'_>> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        name.to_ns_name::<GenericNamespaced>()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        name.to_fs_name::<GenericFilePath>()
+    }
+}
+
+/// Bind a listener for the given socket name (abstract name on Linux, filesystem
+/// socket path on macOS/BSD, named-pipe path on Windows).
 pub fn listen(path: &str) -> io::Result<NamedSocketListener> {
-    let name = path.to_fs_name::<GenericFilePath>()?;
+    let name = to_name(path)?;
     let inner = ListenerOptions::new().name(name).create_sync()?;
     Ok(NamedSocketListener { inner })
 }
 
-/// Connect to a listener bound at the given path.
+/// Connect to a listener bound at the given socket name.
 pub fn connect(path: &str) -> io::Result<Stream> {
-    let name = path.to_fs_name::<GenericFilePath>()?;
+    let name = to_name(path)?;
     Stream::connect(name)
 }
