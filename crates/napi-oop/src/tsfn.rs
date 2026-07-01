@@ -80,6 +80,13 @@ impl CallbackHandle {
     pub fn invoke(&self, args: Vec<rmpv::Value>) {
         self.sink.invoke(self.handle, args);
     }
+
+    /// Invoke the callback with already-encoded args and await its result
+    /// (request/response). Resolves to the peer callback's returned value as a
+    /// dynamic `rmpv::Value`, or an error message.
+    pub async fn call_async(&self, args: Vec<rmpv::Value>) -> Result<rmpv::Value, String> {
+        self.sink.call(self.handle, args).await
+    }
 }
 
 impl Drop for CallbackHandle {
@@ -162,8 +169,7 @@ pub struct ThreadsafeFunction<
     const CALLEE_HANDLED: bool = true,
     const WEAK: bool = false,
     const MAX_QUEUE_SIZE: usize = 0,
->
-where
+> where
     T: JsValuesTupleIntoVec,
     Return: FromNapiValue + 'static,
     ErrorStatus: AsRef<str> + From<Status>,
@@ -231,6 +237,50 @@ where
             Inner::Real(real) => real.call(value, mode.into()),
         }
     }
+
+    /// Fire the callback and **await** its resolved value, the napi-default
+    /// (`CalleeHandled`) way: the JS callback receives `(err, value)`. Mirrors
+    /// napi's `ThreadsafeFunction::call_async`, so source written for vanilla napi
+    /// (`let r = tsfn.call_async(Ok(v)).await?;`) compiles unchanged. In-process
+    /// it delegates to real napi; out-of-process it sends a `CallbackCall` and
+    /// awaits the peer's reply, decoding it into `R` (e.g. a resolved `Promise`).
+    pub async fn call_async(&self, value: Result<T, napi::Error<S>>) -> napi::Result<R>
+    where
+        R: serde::de::DeserializeOwned,
+    {
+        match &self.inner {
+            Inner::Wire(handle) => {
+                let args = match value {
+                    Ok(v) => {
+                        let arg = crate::wire::to_wire(&v).map_err(|e| {
+                            napi::Error::from_reason(format!(
+                                "failed to encode callback value: {e}"
+                            ))
+                        })?;
+                        // (null, value): a leading nil error slot mirrors vanilla
+                        // napi's CalleeHandled `(err, value)` shape.
+                        vec![rmpv::Value::Nil, arg]
+                    }
+                    Err(err) => {
+                        let arg = crate::wire::to_wire(&err.reason).map_err(|e| {
+                            napi::Error::from_reason(format!(
+                                "failed to encode callback error: {e}"
+                            ))
+                        })?;
+                        vec![arg]
+                    }
+                };
+                let result = handle
+                    .call_async(args)
+                    .await
+                    .map_err(napi::Error::from_reason)?;
+                crate::wire::from_wire::<R>(result).map_err(|e| {
+                    napi::Error::from_reason(format!("failed to decode callback result: {e}"))
+                })
+            }
+            Inner::Real(real) => real.call_async(value).await,
+        }
+    }
 }
 
 impl<T, R, C, S, const W: bool, const M: usize> ThreadsafeFunction<T, R, C, S, false, W, M>
@@ -250,6 +300,33 @@ where
                 crate::shim::Status::Ok
             }
             Inner::Real(real) => real.call(value, mode.into()),
+        }
+    }
+
+    /// Fire the callback and **await** its resolved value, the
+    /// `CalleeHandled = false` way: the JS callback receives just `(value)`, with
+    /// no leading error slot. Mirrors napi's `ThreadsafeFunction::call_async`.
+    /// In-process it delegates to real napi; out-of-process it sends a
+    /// `CallbackCall` and awaits the peer's reply, decoding it into `R` (e.g. a
+    /// resolved `Promise`).
+    pub async fn call_async(&self, value: T) -> napi::Result<R>
+    where
+        R: serde::de::DeserializeOwned,
+    {
+        match &self.inner {
+            Inner::Wire(handle) => {
+                let arg = crate::wire::to_wire(&value).map_err(|e| {
+                    napi::Error::from_reason(format!("failed to encode callback value: {e}"))
+                })?;
+                let result = handle
+                    .call_async(vec![arg])
+                    .await
+                    .map_err(napi::Error::from_reason)?;
+                crate::wire::from_wire::<R>(result).map_err(|e| {
+                    napi::Error::from_reason(format!("failed to decode callback result: {e}"))
+                })
+            }
+            Inner::Real(real) => real.call_async(value).await,
         }
     }
 }
@@ -303,8 +380,7 @@ where
     S: AsRef<str> + From<Status>,
 {
     unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<Self> {
-        let real =
-            unsafe { RealTsfn::<T, R, T, S, A, W, M>::from_napi_value(env, napi_val)? };
+        let real = unsafe { RealTsfn::<T, R, T, S, A, W, M>::from_napi_value(env, napi_val)? };
         Ok(Self {
             inner: Inner::Real(Arc::new(real)),
             _marker: PhantomData,

@@ -421,7 +421,7 @@ mod dual {
                 if let Some((inputs, _)) = fn_trait_sig(ty) {
                     ts_fn_type(&inputs)
                 } else if let Some(inner) = tsfn_inner(ty) {
-                    ts_tsfn_type(&inner)
+                    ts_tsfn_type(&inner, tsfn_callee_handled(ty))
                 } else {
                     quote!(#ty).to_string().split_whitespace().collect()
                 }
@@ -880,7 +880,7 @@ mod dual {
         if let Some((inputs, _)) = fn_trait_sig(ty) {
             ts_fn_type(&inputs)
         } else if let Some(inner) = tsfn_inner(ty) {
-            ts_tsfn_type(&inner)
+            ts_tsfn_type(&inner, tsfn_callee_handled(ty))
         } else {
             quote!(#ty).to_string().split_whitespace().collect()
         }
@@ -1077,13 +1077,50 @@ mod dual {
         format!("({})=>()", params.join(","))
     }
 
-    /// Render the TS type for an explicit `ThreadsafeFunction<T>` param. These are
-    /// `CalleeHandled` by default, so — exactly like vanilla napi-rs — the JS
-    /// callback is invoked error-first as `(err: Error | null, value: T) => void`.
-    /// The leading `err` param is encoded with the `__NapiCbErr` sentinel that the
-    /// manifest maps to `Error | null`.
-    fn ts_tsfn_type(inner: &syn::Type) -> String {
+    /// Render the TS type for an explicit `ThreadsafeFunction<T>` param. A default
+    /// (`CalleeHandled = true`) threadsafe function is invoked error-first as
+    /// `(err: Error | null, value: T) => void`, exactly like vanilla napi-rs; a
+    /// `CalleeHandled = false` one delivers just `(value: T) => void`. The leading
+    /// `err` param is encoded with the `__NapiCbErr` sentinel that the manifest
+    /// maps to `Error | null`.
+    fn ts_tsfn_type(inner: &syn::Type, callee_handled: bool) -> String {
         let value: String = quote!(#inner).to_string().split_whitespace().collect();
-        format!("(err:__NapiCbErr,a0:{value})=>()")
+        if callee_handled {
+            format!("(err:__NapiCbErr,a0:{value})=>()")
+        } else {
+            format!("(a0:{value})=>()")
+        }
+    }
+
+    /// Whether an explicit `ThreadsafeFunction<..>` param is `CalleeHandled`. The
+    /// flag is the 5th generic argument (`ThreadsafeFunction<T, Return,
+    /// CallJsBackArgs, Status, const CalleeHandled: bool = true, ..>`) and defaults
+    /// to `true`, matching napi-rs. A `false` there flips the JS callback shape
+    /// from `(err, value)` to `(value)`.
+    fn tsfn_callee_handled(ty: &syn::Type) -> bool {
+        let syn::Type::Path(p) = ty else {
+            return true;
+        };
+        let Some(seg) = p.path.segments.last() else {
+            return true;
+        };
+        if seg.ident != "ThreadsafeFunction" {
+            return true;
+        }
+        let syn::PathArguments::AngleBracketed(a) = &seg.arguments else {
+            return true;
+        };
+        match a.args.iter().nth(4) {
+            Some(syn::GenericArgument::Const(syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Bool(b),
+                ..
+            }))) => b.value,
+            // Some syn versions surface a bare `false`/`true` const generic as a
+            // type-path argument rather than a const expression.
+            Some(syn::GenericArgument::Type(syn::Type::Path(tp))) => {
+                tp.path.get_ident().is_none_or(|i| i != "false")
+            }
+            _ => true,
+        }
     }
 }

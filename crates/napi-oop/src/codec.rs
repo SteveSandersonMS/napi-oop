@@ -80,6 +80,35 @@ pub struct CallbackInvoke {
     pub args: Vec<rmpv::Value>,
 }
 
+/// Invoke a remote callback handle **and await its result** (reverse direction,
+/// request/response). Mirrors napi's `ThreadsafeFunction::call_async`: the peer
+/// runs the JS callback, awaits its (possibly `Promise`) return, and replies with
+/// a [`CallbackResult`] or [`CallbackError`] matched by `call_id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallbackCall {
+    /// Correlates the reply ([`CallbackResult`]/[`CallbackError`]) to this call.
+    pub call_id: CorrelationId,
+    pub handle: HandleId,
+    pub args: Vec<rmpv::Value>,
+}
+
+/// A successful reply to a [`CallbackCall`]: the JS callback's resolved value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallbackResult {
+    pub call_id: CorrelationId,
+    pub result: rmpv::Value,
+}
+
+/// A failed reply to a [`CallbackCall`] (the JS callback threw or rejected).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallbackError {
+    pub call_id: CorrelationId,
+    pub message: String,
+}
+
 /// Release a remote handle so the owning side can drop it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Release {
@@ -104,6 +133,9 @@ pub enum Message {
     Response(Response),
     Error(ErrorMsg),
     CallbackInvoke(CallbackInvoke),
+    CallbackCall(CallbackCall),
+    CallbackResult(CallbackResult),
+    CallbackError(CallbackError),
     Release(Release),
     ReleaseExternal(ReleaseExternal),
 }

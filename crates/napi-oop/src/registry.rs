@@ -14,6 +14,13 @@ use rmpv::Value;
 
 use crate::codec::{ErrorMsg, HandleId, Message, Request, Response};
 
+/// The future returned by [`Callbacks::call`]: resolves to the peer callback's
+/// returned value (already decoded to a dynamic [`Value`]) or an error message.
+/// Boxed and owned (`'static`) so the trait stays object-safe and each impl may
+/// choose its own await mechanism.
+pub type CallbackFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>;
+
 /// Lets a dispatched function invoke a callback held by the peer (e.g. a JS
 /// function passed as an argument). Modelled on napi's `ThreadsafeFunction`:
 /// invocation is **fire-and-forget** — the call is queued to the peer's event
@@ -25,6 +32,15 @@ pub trait Callbacks: Send + Sync {
     /// Queue an invocation of the peer-held callback `handle` with `args`.
     /// Returns once enqueued; runs asynchronously on the peer.
     fn invoke(&self, handle: HandleId, args: Vec<Value>);
+
+    /// Invoke the peer-held callback `handle` with `args` **and await its
+    /// result**, mirroring napi's `ThreadsafeFunction::call_async`. The peer runs
+    /// the JS callback, awaits its (possibly `Promise`) return, and replies; the
+    /// returned future resolves to that value (or an error). Unlike [`invoke`],
+    /// this is request/response.
+    ///
+    /// [`invoke`]: Callbacks::invoke
+    fn call(&self, handle: HandleId, args: Vec<Value>) -> CallbackFuture;
 
     /// Tell the peer it may drop `handle` — sent when the Rust side stops
     /// holding the callback (closure dropped, or last `ThreadsafeFunction` gone).
@@ -144,6 +160,11 @@ pub struct NoCallbacks;
 
 impl Callbacks for NoCallbacks {
     fn invoke(&self, _handle: HandleId, _args: Vec<Value>) {}
+    fn call(&self, _handle: HandleId, _args: Vec<Value>) -> CallbackFuture {
+        Box::pin(async {
+            Err("no callback sink available (NoCallbacks cannot await a result)".to_string())
+        })
+    }
     fn release(&self, _handle: HandleId) {}
 }
 

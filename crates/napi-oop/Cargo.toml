@@ -37,6 +37,7 @@ rmp-serde = "1"
 rmpv = { version = "1", features = ["with-serde"] }
 inventory = "0.3"
 pollster = "0.4"
+futures-channel = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
 
 # macOS needs `confstr(_CS_DARWIN_USER_TEMP_DIR)` to resolve the real per-user

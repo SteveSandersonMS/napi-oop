@@ -28,6 +28,15 @@ export class Peer {
   private readonly pending = new Map<number, Pending>();
   /** JS functions passed as args, kept alive so the provider can invoke them. */
   private readonly callbacks = new Map<number, Callback>();
+  /**
+   * Awaitable variants of held JS callbacks, invoked by the provider via
+   * `callbackCall` (request/response). Distinct from `callbacks` so the
+   * fire-and-forget `callbackInvoke` fast path is unaffected. In the direct
+   * binding this stays empty and `callbackCall` falls back to `callbacks`; the
+   * worker-backed `SyncProvider` installs an awaitable proxy here that forwards
+   * to the main thread and returns a `Promise` for its result.
+   */
+  private readonly callbackCallHandlers = new Map<number, Callback>();
   private nextHandle = 1;
   private closed = false;
   /**
@@ -156,11 +165,23 @@ export class Peer {
     this.callbacks.set(handle, fn);
   }
 
+  /**
+   * Register the **awaitable** variant of a callback under a caller-assigned
+   * handle, invoked by the provider via `callbackCall`. Used by the sync binding,
+   * where the worker installs a proxy that forwards to the main thread and
+   * returns a `Promise` resolving to the callback's result. In the direct binding
+   * this is unused (`callbackCall` falls back to the plain `callbacks` map).
+   */
+  registerCallbackCall(handle: number, fn: Callback): void {
+    this.callbackCallHandlers.set(handle, fn);
+  }
+
   /** Close the connection and reject any in-flight calls. */
   close(): void {
     if (this.closed) return;
     this.closed = true;
     this.callbacks.clear();
+    this.callbackCallHandlers.clear();
     this.socket.end();
     this.failAll(new Error('peer closed'));
   }
@@ -170,8 +191,13 @@ export class Peer {
       this.handleCallback(msg.handle, msg.args);
       return;
     }
+    if (msg.type === 'callbackCall') {
+      this.handleCallbackCall(msg.callId, msg.handle, msg.args);
+      return;
+    }
     if (msg.type === 'release') {
       this.callbacks.delete(msg.handle);
+      this.callbackCallHandlers.delete(msg.handle);
       this.onCallbackReleased?.(msg.handle);
       return;
     }
@@ -195,6 +221,34 @@ export class Peer {
     } catch {
       // Fire-and-forget: callback errors are the caller's concern, not the wire's.
     }
+  }
+
+  /**
+   * Run a JS callback the provider invoked via `callbackCall` and reply with its
+   * result (request/response), mirroring napi's `ThreadsafeFunction::call_async`.
+   * The callback may return a value or a `Promise`; either way the resolved value
+   * is sent back as a `callbackResult`, or a rejection/throw as a `callbackError`.
+   */
+  private handleCallbackCall(callId: number, handle: number, args: unknown[]): void {
+    const cb = this.callbackCallHandlers.get(handle) ?? this.callbacks.get(handle);
+    if (!cb) {
+      this.sendCallbackError(callId, `no callback registered for handle ${handle}`);
+      return;
+    }
+    Promise.resolve()
+      .then(() => cb(...args))
+      .then(
+        (result) => this.sendCallbackResult(callId, result),
+        (err: unknown) => this.sendCallbackError(callId, err instanceof Error ? err.message : String(err))
+      );
+  }
+
+  private sendCallbackResult(callId: number, result: unknown): void {
+    if (!this.closed) this.socket.write(encodeFrame({ type: 'callbackResult', callId, result }));
+  }
+
+  private sendCallbackError(callId: number, message: string): void {
+    if (!this.closed) this.socket.write(encodeFrame({ type: 'callbackError', callId, message }));
   }
 
   private failAll(error: Error): void {

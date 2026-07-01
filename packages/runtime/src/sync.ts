@@ -74,6 +74,16 @@ interface CallbackRelease {
   cbRelease: true;
   handle: number;
 }
+/**
+ * An awaitable callback (`callbackCall`) forwarded from the worker: run the JS
+ * callback on the main thread, await its result, and post a `cbResult` back.
+ */
+interface CallbackCall {
+  cbCall: true;
+  cbCallId: number;
+  handle: number;
+  args: unknown[];
+}
 interface ProviderClosed {
   providerClosed: true;
 }
@@ -132,6 +142,35 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
     }
   };
 
+  // Run an awaitable callback (`callbackCall`) and post its result back to the
+  // worker, which forwards it to the provider. The callback may return a value or
+  // a `Promise`; either way the resolved value is sent as a `cbResult`, a
+  // rejection/throw as an error. Mirrors napi's `ThreadsafeFunction::call_async`.
+  const dispatchCallbackCall = (cbCallId: number, handle: number, args: unknown[]): void => {
+    const cb = callbacks.get(handle);
+    if (!cb) {
+      asyncMain.postMessage({
+        cbResult: true,
+        cbCallId,
+        ok: false,
+        error: `no callback registered for handle ${handle}`,
+      });
+      return;
+    }
+    Promise.resolve()
+      .then(() => cb(...args))
+      .then(
+        (result) => asyncMain.postMessage({ cbResult: true, cbCallId, ok: true, result }),
+        (err: unknown) =>
+          asyncMain.postMessage({
+            cbResult: true,
+            cbCallId,
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          })
+      );
+  };
+
   // Global FIFO callback ordering. The worker tags every invocation with a
   // monotonic `seq` (its fire order) and splits delivery across two ports: the
   // sync port (drained synchronously under `Atomics.wait` while a blocking call
@@ -173,33 +212,40 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
   // Event-loop delivery of async results and callbacks. Fires whenever the main
   // thread is free; while a sync call blocks, these queue and run after it.
   // Callback invocations are dispatched in global `seq` order.
-  asyncMain.on('message', (msg: AsyncResult | CallbackInvoke | CallbackRelease | ProviderClosed) => {
-    if ('providerClosed' in msg) {
-      // The provider connection dropped (e.g. it crashed or was signalled). Its
-      // held callbacks can never fire again, so release every keep-alive ref and
-      // let the event loop drain. Pending async calls are failed; further calls
-      // throw `provider is closed`.
-      onProviderGone();
-      return;
+  asyncMain.on(
+    'message',
+    (msg: AsyncResult | CallbackInvoke | CallbackCall | CallbackRelease | ProviderClosed) => {
+      if ('providerClosed' in msg) {
+        // The provider connection dropped (e.g. it crashed or was signalled). Its
+        // held callbacks can never fire again, so release every keep-alive ref and
+        // let the event loop drain. Pending async calls are failed; further calls
+        // throw `provider is closed`.
+        onProviderGone();
+        return;
+      }
+      if ('cbRelease' in msg) {
+        // The provider dropped this callback; drop our entry and release the
+        // keep-alive ref taken when it was sent. Guard on delete so a stray or
+        // duplicate release can't unbalance the ref count.
+        if (callbacks.delete(msg.handle)) unrefAsync();
+        return;
+      }
+      if ('cbCall' in msg) {
+        dispatchCallbackCall(msg.cbCallId, msg.handle, msg.args);
+        return;
+      }
+      if ('cb' in msg) {
+        deliverCallback(msg.seq, msg.handle, msg.args);
+        return;
+      }
+      const p = pending.get(msg.id);
+      if (!p) return;
+      pending.delete(msg.id);
+      unrefAsync();
+      if (msg.ok) p.resolve(msg.result);
+      else p.reject(new Error(msg.error));
     }
-    if ('cbRelease' in msg) {
-      // The provider dropped this callback; drop our entry and release the
-      // keep-alive ref taken when it was sent. Guard on delete so a stray or
-      // duplicate release can't unbalance the ref count.
-      if (callbacks.delete(msg.handle)) unrefAsync();
-      return;
-    }
-    if ('cb' in msg) {
-      deliverCallback(msg.seq, msg.handle, msg.args);
-      return;
-    }
-    const p = pending.get(msg.id);
-    if (!p) return;
-    pending.delete(msg.id);
-    unrefAsync();
-    if (msg.ok) p.resolve(msg.result);
-    else p.reject(new Error(msg.error));
-  });
+  );
 
   // Drain the sync port. While a blocking sync call is in flight the worker may
   // post callback invocations here (so they fire synchronously, before the call

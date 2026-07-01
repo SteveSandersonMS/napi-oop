@@ -64,6 +64,15 @@ async function exercise(provider: SyncProvider, socketEnvBeforeConnect: string |
   // JS callback receives `(err, value)` — exactly like a vanilla napi TSFN.
   const tsfnSum = native.sumEachTsfn([10, 20, 30], (_err, running) => tsfnSteps.push(running));
 
+  // Awaitable callback (request/response): the provider fires our JS callback and
+  // *awaits* the `Promise<string>` it returns, then hands the resolved value
+  // back. Exercises the `CallbackCall`/`CallbackResult` round-trip that backs the
+  // runtime's `SessionBridge` — the reason napi-oop grew `call_async`.
+  const askAnswer = await native.askCallback('ping', async (request: string) => {
+    await Promise.resolve();
+    return `pong:${request}`;
+  });
+
   // Synchronous-callback reentrancy: `notifyThenReturn` fires its callback while
   // still completing; the callback reenters with a *second* sync call that stays
   // in flight (it sleeps) as the outer call resolves. The two overlapping sync
@@ -176,6 +185,7 @@ async function exercise(provider: SyncProvider, socketEnvBeforeConnect: string |
     sumSteps,
     tsfnSum,
     tsfnSteps,
+    askAnswer,
     reentrantOuter,
     reentrantCbResult,
     reversed,

@@ -33,6 +33,11 @@ test('rust-parent: every flow with Rust spawning Node', async () => {
   assert.equal(r.sum, 60);
   assert.deepEqual(r.sumSteps, [10, 30, 60]);
   assert.equal(r.tsfnSum, 60);
+  assert.equal(
+    r.askAnswer,
+    'answered: pong:ping',
+    'awaitable callback round-trips its resolved Promise value (rust-parent)'
+  );
   assert.deepEqual(r.reversed, [4, 3, 2, 1]);
 
   // Synchronous-callback reentrancy round-trips identically when Rust is the

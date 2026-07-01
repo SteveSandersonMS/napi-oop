@@ -17,6 +17,7 @@ pub mod codec;
 pub mod diag;
 pub mod manifest;
 pub mod peer;
+pub mod promise;
 pub mod provider;
 pub mod registry;
 pub mod shim;
@@ -25,6 +26,7 @@ pub mod tsfn;
 pub mod types;
 pub mod wire;
 
+pub use promise::Promise;
 #[cfg(feature = "tokio")]
 pub use shim::{spawn, spawn_blocking};
 pub use shim::{AsyncBlockBuilder, Env, Error, Object, Result, Status};

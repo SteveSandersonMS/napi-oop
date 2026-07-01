@@ -283,6 +283,7 @@ dependencies = [
 name = "napi-oop"
 version = "0.1.0"
 dependencies = [
+ "futures-channel",
  "interprocess",
  "inventory",
  "libc",

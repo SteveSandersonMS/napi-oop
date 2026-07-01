@@ -17,7 +17,9 @@
 pub use ::real_napi::*;
 
 // Unified value types override the real napi ones (explicit > glob).
-pub use napi_oop::{BigInt, Buffer, External, ThreadsafeFunction, ThreadsafeFunctionCallMode, Utf16String};
+pub use napi_oop::{
+    BigInt, Buffer, External, Promise, ThreadsafeFunction, ThreadsafeFunctionCallMode, Utf16String,
+};
 
 // The dual-emit attribute macro: emits the real `#[napi]` ABI alongside the
 // out-of-process wire glue.
@@ -31,5 +33,8 @@ pub mod bindgen_prelude {
     pub use ::real_napi::bindgen_prelude::*;
     // Override the value types here too, since napi-derive emits fully-qualified
     // `napi::bindgen_prelude::Buffer` etc. in its generated code.
-    pub use napi_oop::{BigInt, Buffer, External, ThreadsafeFunction, ThreadsafeFunctionCallMode, Utf16String};
+    pub use napi_oop::{
+        BigInt, Buffer, External, Promise, ThreadsafeFunction, ThreadsafeFunctionCallMode,
+        Utf16String,
+    };
 }

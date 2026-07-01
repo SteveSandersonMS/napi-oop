@@ -45,6 +45,11 @@ interface ReleaseRequest {
   token: number;
 }
 
+/** Main-thread reply to an awaitable `callbackCall` (see `installCallback`). */
+type CbResultMessage =
+  | { cbResult: true; cbCallId: number; ok: true; result: unknown }
+  | { cbResult: true; cbCallId: number; ok: false; error: string };
+
 const { signal, port, asyncPort, mode, command, args, socketPath } = workerData as InitData;
 setDiagRole('worker');
 
@@ -101,6 +106,16 @@ void init().then(
     // the exact order the provider fired them.
     let cbSeq = 1;
 
+    // Awaitable callbacks (`callbackCall`): the provider's `Peer` invokes the
+    // proxy below and awaits its `Promise`. We forward the call to the main thread
+    // (where the real JS callback lives) with a worker-local `cbCallId`, and park
+    // the returned `Promise` here until the main thread posts back a `cbResult`.
+    let cbCallSeq = 1;
+    const cbCallPending = new Map<
+      number,
+      { resolve: (v: unknown) => void; reject: (e: Error) => void }
+    >();
+
     const installCallback = (handle: number): void => {
       peer.registerCallback(handle, (...cbArgs: unknown[]) => {
         const seq = cbSeq++;
@@ -112,6 +127,20 @@ void init().then(
           diag('worker-cb-async', { handle });
           asyncPort.postMessage({ cb: true, handle, args: cbArgs, seq });
         }
+      });
+      // Awaitable variant. Always delivered over the async port: a callback whose
+      // result is awaited cannot be serviced while the main thread is parked in a
+      // blocking sync call (its event loop can't run the JS callback to
+      // completion) — the same inherent limitation as awaiting a JS promise while
+      // blocking the loop in-process. In practice these fire from `async`
+      // dispatches, when the main thread is idle.
+      peer.registerCallbackCall(handle, (...cbArgs: unknown[]) => {
+        const cbCallId = cbCallSeq++;
+        diag('worker-cbcall-async', { handle, cbCallId });
+        return new Promise<unknown>((resolve, reject) => {
+          cbCallPending.set(cbCallId, { resolve, reject });
+          asyncPort.postMessage({ cbCall: true, cbCallId, handle, args: cbArgs });
+        });
       });
     };
 
@@ -162,9 +191,20 @@ void init().then(
       );
     });
 
-    asyncPort.on('message', (msg: AsyncRequest | ReleaseRequest) => {
+    asyncPort.on('message', (msg: AsyncRequest | ReleaseRequest | CbResultMessage) => {
       if ('release' in msg) {
         peer.releaseExternal(msg.token);
+        return;
+      }
+      if ('cbResult' in msg) {
+        // The main thread finished running an awaitable callback; resolve the
+        // parked proxy `Promise` so the provider's `Peer` can reply to the wire.
+        const p = cbCallPending.get(msg.cbCallId);
+        if (p) {
+          cbCallPending.delete(msg.cbCallId);
+          if (msg.ok) p.resolve(msg.result);
+          else p.reject(new Error(msg.error));
+        }
         return;
       }
       installCallbacks(msg.args);

@@ -41,6 +41,33 @@ export interface CallbackInvoke {
   args: unknown[];
 }
 
+/**
+ * Provider invokes a JS callback the caller holds **and awaits its result**
+ * (request/response), mirroring napi's `ThreadsafeFunction::call_async`. The
+ * caller runs the callback, awaits its (possibly `Promise`) return, and replies
+ * with a `CallbackResult` or `CallbackError` matched by `callId`.
+ */
+export interface CallbackCall {
+  type: 'callbackCall';
+  callId: number;
+  handle: number;
+  args: unknown[];
+}
+
+/** A successful reply to a `CallbackCall`: the callback's resolved value. */
+export interface CallbackResult {
+  type: 'callbackResult';
+  callId: number;
+  result: unknown;
+}
+
+/** A failed reply to a `CallbackCall` (the callback threw or rejected). */
+export interface CallbackError {
+  type: 'callbackError';
+  callId: number;
+  message: string;
+}
+
 /** Releases a callback handle so the holder can drop it. */
 export interface Release {
   type: 'release';
@@ -54,7 +81,16 @@ export interface ReleaseExternal {
 }
 
 /** Any message that may arrive from the peer. */
-export type Message = Hello | Request | Response | ErrorMsg | CallbackInvoke | Release;
+export type Message =
+  | Hello
+  | Request
+  | Response
+  | ErrorMsg
+  | CallbackInvoke
+  | CallbackCall
+  | CallbackResult
+  | CallbackError
+  | Release;
 
 /** Wire marker replacing a JS function arg: `{ __napi_cb: <handle id> }`. */
 export interface CallbackRef {

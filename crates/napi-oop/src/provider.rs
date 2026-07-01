@@ -47,9 +47,14 @@ pub fn provider_hello() -> Hello {
 pub fn serve(mut stream: Stream) -> io::Result<()> {
     handshake(&mut stream, provider_hello())?;
     let writer = std::sync::Arc::new(std::sync::Mutex::new(stream.try_clone()?));
+    // Shared registry of in-flight awaitable callbacks (`call_async`): the worker
+    // thread that fired the call parks on a oneshot here, and the reader loop
+    // (below) fulfils it when the peer's `CallbackResult`/`CallbackError` arrives.
+    let pending = std::sync::Arc::new(CallbackPending::default());
     let callbacks: std::sync::Arc<dyn crate::registry::Callbacks> =
         std::sync::Arc::new(ProviderCallbacks {
             writer: std::sync::Arc::clone(&writer),
+            pending: std::sync::Arc::clone(&pending),
         });
 
     // A small fixed pool reads requests off a channel, so threads are reused
@@ -83,6 +88,8 @@ pub fn serve(mut stream: Stream) -> io::Result<()> {
                 }
             }
             Some(Message::ReleaseExternal(r)) => crate::types::release_external(r.token),
+            Some(Message::CallbackResult(r)) => pending.resolve(r.call_id, Ok(r.result)),
+            Some(Message::CallbackError(e)) => pending.resolve(e.call_id, Err(e.message)),
             Some(_other) => {}
         }
     }
@@ -100,17 +107,68 @@ fn worker_count() -> usize {
         .unwrap_or(4)
 }
 
-/// The [`Callbacks`] impl handed to each dispatched function: fire-and-forget,
-/// writing a `CallbackInvoke` and returning immediately. Holds an owned writer
+/// The [`Callbacks`] impl handed to each dispatched function: fire-and-forget
+/// invocations write a `CallbackInvoke` and return immediately, while awaitable
+/// [`call`](crate::registry::Callbacks::call)s write a `CallbackCall` and park on
+/// a oneshot until the reader loop routes the reply back. Holds an owned writer
 /// so a stored `ThreadsafeFunction` can keep firing after the call returns.
 struct ProviderCallbacks {
     writer: std::sync::Arc<std::sync::Mutex<Stream>>,
+    pending: std::sync::Arc<CallbackPending>,
+}
+
+/// Correlation registry for awaitable callbacks. `next_id` allocates a fresh
+/// `call_id` per `CallbackCall`; `map` parks a oneshot sender per outstanding
+/// call, fulfilled by the reader loop on the matching `CallbackResult`/`Error`.
+#[derive(Default)]
+struct CallbackPending {
+    next_id: std::sync::atomic::AtomicU64,
+    map: std::sync::Mutex<
+        std::collections::HashMap<
+            crate::codec::CorrelationId,
+            futures_channel::oneshot::Sender<Result<rmpv::Value, String>>,
+        >,
+    >,
+}
+
+impl CallbackPending {
+    /// Fulfil the oneshot for `call_id`, waking the parked worker. Unknown ids
+    /// (already resolved, or never registered) are ignored.
+    fn resolve(&self, call_id: crate::codec::CorrelationId, value: Result<rmpv::Value, String>) {
+        if let Some(sender) = self.map.lock().unwrap().remove(&call_id) {
+            let _ = sender.send(value);
+        }
+    }
 }
 
 impl crate::registry::Callbacks for ProviderCallbacks {
     fn invoke(&self, handle: u64, args: Vec<rmpv::Value>) {
         let msg = Message::CallbackInvoke(crate::codec::CallbackInvoke { handle, args });
         let _ = write_message(&mut *self.writer.lock().unwrap(), &msg);
+    }
+
+    fn call(&self, handle: u64, args: Vec<rmpv::Value>) -> crate::registry::CallbackFuture {
+        let call_id = self
+            .pending
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (tx, rx) = futures_channel::oneshot::channel();
+        self.pending.map.lock().unwrap().insert(call_id, tx);
+        let msg = Message::CallbackCall(crate::codec::CallbackCall {
+            call_id,
+            handle,
+            args,
+        });
+        if write_message(&mut *self.writer.lock().unwrap(), &msg).is_err() {
+            self.pending.map.lock().unwrap().remove(&call_id);
+            return Box::pin(async { Err("failed to send callback call to peer".to_string()) });
+        }
+        Box::pin(async move {
+            match rx.await {
+                Ok(result) => result,
+                Err(_canceled) => Err("callback response channel closed".to_string()),
+            }
+        })
     }
 
     fn release(&self, handle: u64) {

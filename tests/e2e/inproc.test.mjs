@@ -68,6 +68,15 @@ test('in-proc: every flow through the real napi addon door', async () => {
   await until(() => tsfnSteps.length === 3);
   assert.deepEqual(tsfnSteps, [10, 30, 60], 'ThreadsafeFunction callbacks drain on the event loop');
 
+  // Awaitable callback (request/response): the provider fires our callback and
+  // awaits the Promise<string> it returns. In-process this delegates to real
+  // napi's `ThreadsafeFunction::call_async`; the same source runs out-of-process.
+  const askAnswer = await native.askCallback('ping', async (request) => {
+    await Promise.resolve();
+    return `pong:${request}`;
+  });
+  assert.equal(askAnswer, 'answered: pong:ping', 'awaitable callback round-trips its resolved Promise value');
+
   // Synchronous-callback reentrancy: `notifyThenReturn` fires its callback inline,
   // and the callback reenters with a nested `slowValue` call. Through the real
   // napi door these simply nest on the JS thread, so each keeps its own result —

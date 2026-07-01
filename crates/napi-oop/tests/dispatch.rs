@@ -284,6 +284,10 @@ impl registry::Callbacks for RecordingCallbacks {
     fn invoke(&self, _handle: u64, args: Vec<Value>) {
         self.calls.lock().unwrap().push(args);
     }
+    fn call(&self, _handle: u64, args: Vec<Value>) -> registry::CallbackFuture {
+        self.calls.lock().unwrap().push(args);
+        Box::pin(async { Ok(Value::Nil) })
+    }
     fn release(&self, handle: u64) {
         self.released.lock().unwrap().push(handle);
     }
@@ -346,7 +350,10 @@ fn threadsafe_function_invokes_through_callbacks_table() {
         .iter()
         .map(|a| {
             assert_eq!(a.len(), 2, "tsfn callback should deliver (err, value)");
-            assert!(a[0].is_nil(), "leading error slot should be null on success");
+            assert!(
+                a[0].is_nil(),
+                "leading error slot should be null on success"
+            );
             a[1].as_i64().unwrap()
         })
         .collect();
@@ -370,7 +377,11 @@ fn callback_handle_is_released_when_closure_drops() {
 fn callback_manifest_renders_ts_fn_type() {
     let m = napi_oop::manifest::manifest();
     // The `impl Fn` sugar surfaces a plain single-arg callback...
-    let sum_each = m.functions.iter().find(|f| f.rust_name == "sum_each").unwrap();
+    let sum_each = m
+        .functions
+        .iter()
+        .find(|f| f.rust_name == "sum_each")
+        .unwrap();
     assert_eq!(sum_each.params, vec!["Array<number>", "(a0:number)=>void"]);
     // ...while an explicit `ThreadsafeFunction<T>` is `CalleeHandled`, so — exactly
     // like vanilla napi-rs — it renders an error-first `(err, value)` signature.

@@ -81,6 +81,23 @@ pub fn sum_each_tsfn(values: Vec<i32>, on_step: napi::ThreadsafeFunction<i32>) -
     total
 }
 
+/// Awaitable callback (request/response), mirroring napi's
+/// `ThreadsafeFunction::call_async` and the runtime's `SessionBridge`: fire the
+/// caller's JS callback with a request string, **await** its returned
+/// `Promise<String>`, and hand the resolved value back. Exercises the
+/// out-of-process awaitable-callback path (a `CallbackCall`/`CallbackResult`
+/// round-trip) end to end. The callback is `CalleeHandled = false`, so the JS
+/// side receives just `(value)` and returns a `Promise<string>`.
+#[napi]
+pub async fn ask_callback(
+    request: String,
+    on_ask: napi::ThreadsafeFunction<String, napi::Promise<String>, String, napi::Status, false>,
+) -> napi::Result<String> {
+    let promise = on_ask.call_async(request).await?;
+    let answer = promise.await?;
+    Ok(format!("answered: {answer}"))
+}
+
 /// Reentrancy probe (paired with [`slow_value`]). Fires `cb` **synchronously**
 /// mid-dispatch, then returns its own fixed sentinel (111) immediately. In the
 /// sync binding the callback is drained on the caller's main thread *while this

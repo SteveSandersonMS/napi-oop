@@ -30,6 +30,11 @@ test('node-parent: every flow over the real socket boundary', async () => {
   assert.deepEqual(r.sumSteps, [10, 30, 60]);
   assert.equal(r.tsfnSum, 60);
   assert.deepEqual(r.tsfnSteps, [10, 30, 60]);
+  assert.equal(
+    r.askAnswer,
+    'answered: pong:ping',
+    'awaitable callback round-trips its resolved Promise value over the socket'
+  );
 
   // Synchronous-callback reentrancy: a callback fired mid-call reenters with a
   // second sync call that stays in flight while the outer one resolves. The two
