@@ -7,7 +7,6 @@ name = "add-numbers-example"
 version = "0.1.0"
 dependencies = [
  "napi-build",
- "napi-derive",
  "napi-oop",
  "napi-oop-facade",
 ]
@@ -303,7 +302,6 @@ name = "napi-oop-e2e-fixture"
 version = "0.1.0"
 dependencies = [
  "napi-build",
- "napi-derive",
  "napi-oop",
  "napi-oop-facade",
 ]
@@ -526,7 +524,6 @@ name = "tokio-fetch-example"
 version = "0.1.0"
 dependencies = [
  "napi-build",
- "napi-derive",
  "napi-oop",
  "napi-oop-facade",
  "tokio",

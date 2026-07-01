@@ -22,13 +22,23 @@ path = "src/lib.rs"
 # crate is the same `napi` package the rest of the build graph sees, the enabled
 # features unify across every crate that depends on napi.
 [features]
-async = ["napi/async"]
-serde-json = ["napi/serde-json"]
-dyn-symbols = ["napi/dyn-symbols"]
-object-indexmap = ["napi/object_indexmap"]
+async = ["real-napi/async"]
+serde-json = ["real-napi/serde-json"]
+dyn-symbols = ["real-napi/dyn-symbols"]
+object-indexmap = ["real-napi/object_indexmap"]
 
 [dependencies]
 napi-oop = { path = "../napi-oop" }
 napi-oop-macro = { path = "../napi-oop-macro" }
-napi = { version = "3", default-features = false, features = ["napi4", "napi6", "tokio_rt"] }
+# The real napi-rs crate. This facade's own lib is compiled as `napi` (so
+# consumers' `napi::…` paths resolve here), so we MUST import real napi-rs under
+# a distinct name. Referencing it as `::napi` would make rustc search the deps
+# dir by filename and find two `libnapi-*.rlib` candidates (this facade's own
+# output and real napi's), yielding E0464. A renamed dep is bound via an
+# explicit `--extern real_napi=<path>`, so there is no ambiguous lookup.
+real-napi = { package = "napi", version = "3", default-features = false, features = ["napi4", "napi6", "tokio_rt"] }
+# Not referenced directly: this enables napi-derive's `type-def` feature, which
+# unifies onto the single napi-derive crate the dual-emit macro delegates to via
+# `::napi_oop::__derive`. Every real cdylib build depends on this facade, so this
+# is what turns on `.d.ts` generation across the whole graph.
 napi-derive = { version = "3", features = ["type-def"] }

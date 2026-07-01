@@ -37,6 +37,18 @@ pub use inventory;
 pub use rmpv;
 pub use serde;
 
+// The REAL napi-derive attribute, re-exported at a stable, unshadowable path.
+// The dual-emit macro delegates the in-proc ABI to `::napi_oop::__derive::napi`
+// rather than `::napi_derive::napi`. Routing it through this crate (which every
+// consumer already depends on) means a consumer is free to map its own
+// `napi-derive` package onto napi-oop's macro crate — so unmodified
+// `use napi_derive::napi;` source picks up the dual-emit macro — without the
+// generated delegation recursing back into itself.
+#[doc(hidden)]
+pub mod __derive {
+    pub use napi_derive::napi;
+}
+
 // Drives `async fn` providers to completion inside the sync dispatch thunk. Each
 // request runs on its own thread, so blocking here still allows concurrent calls.
 //

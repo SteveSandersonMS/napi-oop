@@ -12,6 +12,11 @@ rust-version.workspace = true
 # `ToNapiValue`/`TypeName`/`ValidateNapiValue` traits so `#[napi]` codegen accepts
 # them on the in-proc door, while their serde impls carry them on the wire door.
 napi = { version = "3", default-features = false, features = ["napi4", "napi6", "tokio_rt"] }
+# Re-exported at `::napi_oop::__derive::napi` so the dual-emit macro can delegate
+# the in-proc ABI to the real napi-derive without every consumer needing a direct
+# napi-derive dependency. `type-def` (for `.d.ts` generation) is enabled by the
+# facade and unifies onto this same crate in real cdylib builds.
+napi-derive = { version = "3", default-features = false }
 interprocess = "2"
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
@@ -31,8 +36,7 @@ tokio = ["dep:tokio"]
 
 [dev-dependencies]
 napi-oop-macro = { path = "../napi-oop-macro" }
-# The dual-emit macro expands to `::napi_derive::napi(..)`, whose generated code
-# references the real `napi` crate; the wire-glue regression tests therefore need
-# both in scope (the in-proc ABI links but is never invoked under `cargo test`).
-napi-derive = { version = "3", default-features = false }
+# The wire-glue regression tests apply `#[napi]`; the real `napi` crate must be
+# in scope for the in-proc ABI half to link (it is never invoked under `cargo
+# test`). The real napi-derive reaches the tests via `::napi_oop::__derive`.
 napi = { version = "3", default-features = false, features = ["napi4", "napi6", "tokio_rt"] }
