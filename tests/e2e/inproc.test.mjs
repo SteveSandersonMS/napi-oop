@@ -63,6 +63,17 @@ test('in-proc: every flow through the real napi addon door', async () => {
   await until(() => tsfnSteps.length === 3);
   assert.deepEqual(tsfnSteps, [10, 30, 60], 'ThreadsafeFunction callbacks drain on the event loop');
 
+  // Synchronous-callback reentrancy: `notifyThenReturn` fires its callback inline,
+  // and the callback reenters with a nested `slowValue` call. Through the real
+  // napi door these simply nest on the JS thread, so each keeps its own result —
+  // the invariant the out-of-process sync port must also uphold across the wire.
+  let reentrantCbResult = -1;
+  const reentrantOuter = native.notifyThenReturn(() => {
+    reentrantCbResult = native.slowValue(200);
+  });
+  assert.equal(reentrantOuter, 111, 'outer call keeps its own result under reentrancy');
+  assert.equal(reentrantCbResult, 222, 'reentrant call keeps its own result');
+
   // Buffer + BigInt round-trips.
   assert.deepEqual(Array.from(native.reverseBytes(Buffer.from([1, 2, 3, 4]))), [4, 3, 2, 1]);
   assert.equal(native.doubleBig(21n).toString(), '42');

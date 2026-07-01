@@ -56,6 +56,18 @@ async function exercise(provider: SyncProvider) {
   // JS callback receives `(err, value)` — exactly like a vanilla napi TSFN.
   const tsfnSum = native.sumEachTsfn([10, 20, 30], (_err, running) => tsfnSteps.push(running));
 
+  // Synchronous-callback reentrancy: `notifyThenReturn` fires its callback while
+  // still completing; the callback reenters with a *second* sync call that stays
+  // in flight (it sleeps) as the outer call resolves. The two overlapping sync
+  // results must not be swapped — the callback must observe `slowValue`'s own
+  // 222, and the outer call its own 111. (Under a naive sync port with no result
+  // correlation these swap, and only in the truly concurrent out-of-process
+  // modes — in-proc nests the calls and is unaffected.)
+  let reentrantCbResult = -1;
+  const reentrantOuter = native.notifyThenReturn(() => {
+    reentrantCbResult = native.slowValue(200) as number;
+  });
+
   const reversed = Array.from(native.reverseBytes(Buffer.from([1, 2, 3, 4])) as Uint8Array);
   const big = native.doubleBig(21n).toString();
   // Arbitrary-precision BigInt: wider than 64 bits and negative, echoed unchanged
@@ -138,6 +150,8 @@ async function exercise(provider: SyncProvider) {
     sumSteps,
     tsfnSum,
     tsfnSteps,
+    reentrantOuter,
+    reentrantCbResult,
     reversed,
     big,
     bigEcho,

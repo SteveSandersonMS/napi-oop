@@ -24,6 +24,12 @@ test('node-parent: every flow over the real socket boundary', async () => {
   assert.deepEqual(r.sumSteps, [10, 30, 60]);
   assert.equal(r.tsfnSum, 60);
   assert.deepEqual(r.tsfnSteps, [10, 30, 60]);
+
+  // Synchronous-callback reentrancy: a callback fired mid-call reenters with a
+  // second sync call that stays in flight while the outer one resolves. The two
+  // overlapping sync results must not be swapped on the sync port.
+  assert.equal(r.reentrantOuter, 111, 'outer sync call returns its own result under callback reentrancy');
+  assert.equal(r.reentrantCbResult, 222, 'reentrant sync call in a callback returns its own result');
   assert.deepEqual(r.reversed, [4, 3, 2, 1]);
   assert.equal(r.big, '42');
   assert.equal(r.bigEcho, '123456789012345678901234567890', 'wide BigInt round-trips with full precision');

@@ -62,6 +62,30 @@ pub fn sum_each_tsfn(values: Vec<i32>, on_step: napi::ThreadsafeFunction<i32>) -
     total
 }
 
+/// Reentrancy probe (paired with [`slow_value`]). Fires `cb` **synchronously**
+/// mid-dispatch, then returns its own fixed sentinel (111) immediately. In the
+/// sync binding the callback is drained on the caller's main thread *while this
+/// call is still completing*, so if the callback reenters with another sync call
+/// (see `slow_value`) two sync results are in flight at once. Each call must
+/// still receive **its own** result: this one's caller must see 111, never the
+/// reentrant call's value. Guards against the sync port mis-delivering results
+/// that carry no correlation of their own.
+#[napi]
+pub fn notify_then_return(cb: impl Fn(i32)) -> i32 {
+    cb(1);
+    111
+}
+
+/// Reentrancy probe (paired with [`notify_then_return`]). Blocks for `ms` then
+/// returns its own fixed sentinel (222). Called *from within* a synchronous
+/// callback, it stays in flight while the outer call resolves — the window in
+/// which a naive sync port would swap the two calls' results.
+#[napi]
+pub fn slow_value(ms: i32) -> i32 {
+    std::thread::sleep(std::time::Duration::from_millis(ms.max(0) as u64));
+    222
+}
+
 /// A callback the provider stores past the call, like a server's long-lived
 /// accept callback. While the provider holds it, the caller's process must stay
 /// alive — the live callback keeps the event loop ref'd, mirroring how an
@@ -187,7 +211,11 @@ pub struct ShellPrepareResult {
 /// and a nil `.errorResult`.
 #[napi]
 pub fn prepare_shell(input_json: String) -> ShellPrepareResult {
-    let delay = if input_json.contains("\"delay\"") { 1.0 } else { 0.0 };
+    let delay = if input_json.contains("\"delay\"") {
+        1.0
+    } else {
+        0.0
+    };
     ShellPrepareResult {
         input: Some(PreparedShellInput {
             shell_id: "e2e-shell".into(),

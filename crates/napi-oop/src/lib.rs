@@ -14,6 +14,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 pub mod bootstrap;
 pub mod codec;
+pub mod diag;
 pub mod manifest;
 pub mod peer;
 pub mod provider;

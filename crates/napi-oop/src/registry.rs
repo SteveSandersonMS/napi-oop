@@ -139,7 +139,13 @@ pub fn registered_names() -> Vec<String> {
 /// `callbacks` handle lets the function invoke any JS callbacks passed as args.
 pub fn dispatch(request: Request, callbacks: &Arc<dyn Callbacks>) -> Message {
     let Request { id, function, args } = request;
-    match lookup(&function) {
+    if crate::diag::enabled() {
+        crate::diag::log(&format!(
+            "\"event\":\"dispatch-start\",\"id\":{id},\"fn\":{function:?},\"nargs\":{}",
+            args.len()
+        ));
+    }
+    let reply = match lookup(&function) {
         Some(registered) => {
             // Guard against a function panicking: an unwind would otherwise kill
             // the worker thread without ever replying, leaving the caller hung.
@@ -156,15 +162,16 @@ pub fn dispatch(request: Request, callbacks: &Arc<dyn Callbacks>) -> Message {
                     // inside the result is unreachable for cleanup, so reject loudly
                     // rather than leak it.
                     if minted > top_level_externals(&result) {
-                        return Message::Error(ErrorMsg {
+                        Message::Error(ErrorMsg {
                             id,
                             message: format!(
                                 "function '{function}' returned an External nested below \
                                  top level, which cannot be released; return it directly"
                             ),
-                        });
+                        })
+                    } else {
+                        Message::Response(Response { id, result })
                     }
-                    Message::Response(Response { id, result })
                 }
                 Ok(Err(message)) => Message::Error(ErrorMsg { id, message }),
                 Err(panic) => Message::Error(ErrorMsg {
@@ -177,7 +184,18 @@ pub fn dispatch(request: Request, callbacks: &Arc<dyn Callbacks>) -> Message {
             id,
             message: format!("unknown function: {function}"),
         }),
+    };
+    if crate::diag::enabled() {
+        let (kind, detail) = match &reply {
+            Message::Response(r) => ("response", crate::diag::describe_value(&r.result)),
+            Message::Error(e) => ("error", e.message.clone()),
+            _ => ("other", String::new()),
+        };
+        crate::diag::log(&format!(
+            "\"event\":\"dispatch-done\",\"id\":{id},\"fn\":{function:?},\"kind\":\"{kind}\",\"detail\":{detail:?}"
+        ));
     }
+    reply
 }
 
 /// Best-effort extraction of a panic's message payload.

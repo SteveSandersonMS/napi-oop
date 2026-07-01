@@ -17,6 +17,7 @@ import { receiveMessageOnPort, MessageChannel, Worker } from 'worker_threads';
 import { join } from 'path';
 
 import { camelToSnake } from './binding';
+import { diag, diagTrace } from './diag';
 
 /**
  * A handle to the out-of-process provider that mirrors native semantics:
@@ -173,26 +174,43 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
 
   // Drain the sync port. While a blocking sync call is in flight the worker may
   // post callback invocations here (so they fire synchronously, before the call
-  // returns); dispatch those and keep going, returning the first result message.
-  const drain = (): unknown => {
+  // returns); dispatch those and keep going. Each result carries the `syncId` of
+  // the call it belongs to. A synchronous callback can *reenter* with another
+  // sync call while the outer one is still completing, so two results may race on
+  // this port — return only the one for `expectedId` and buffer any other by its
+  // id so the call awaiting it finds it (rather than mis-delivering it here).
+  const syncBuffer = new Map<number, unknown>();
+  const drain = (expectedId: number): unknown => {
     for (;;) {
       const wrapper = receiveMessageOnPort(port1);
       if (!wrapper) return undefined;
-      const msg = wrapper.message as CallbackInvoke | object;
+      const msg = wrapper.message as CallbackInvoke | (Record<string, unknown> & { syncId?: number });
       if (msg && 'cb' in msg) {
         const inv = msg as CallbackInvoke;
+        diag('main-cb-dispatch', { handle: inv.handle });
         dispatchCallback(inv.handle, inv.args);
         continue;
       }
-      return msg;
+      const sid = (msg as { syncId?: number }).syncId ?? 0;
+      if (sid === expectedId) return msg;
+      // A result for a *different* in-flight sync call (reentrancy): buffer it by
+      // id. Without this the outer/inner sync calls could swap results, since the
+      // sync port carries no correlation of its own.
+      diag('main-result-buffered', { expected: expectedId, got: sid });
+      syncBuffer.set(sid, msg);
     }
   };
 
-  const waitForResult = (): unknown => {
+  const waitForResult = (expectedId: number): unknown => {
     for (;;) {
+      const buffered = syncBuffer.get(expectedId);
+      if (buffered !== undefined) {
+        syncBuffer.delete(expectedId);
+        return buffered;
+      }
       Atomics.wait(signal, 0, 0);
       Atomics.store(signal, 0, 0);
-      const msg = drain();
+      const msg = drain(expectedId);
       if (msg !== undefined) return msg;
     }
   };
@@ -210,8 +228,10 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
       return { __napi_cb: handle };
     });
 
-  // Block until the worker has connected/launched and handshaked.
-  const ready = waitForResult() as { ok: false; error: string } | { ready: true } | undefined;
+  // Block until the worker has connected/launched and handshaked. The ready /
+  // init-error message is tagged with the reserved sync id 0.
+  let nextSyncId = 1;
+  const ready = waitForResult(0) as { ok: false; error: string } | { ready: true } | undefined;
   if (ready && 'ok' in ready && !ready.ok) {
     worker.terminate();
     throw new Error(ready.error);
@@ -220,10 +240,13 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
   return {
     call(fn, args) {
       if (closed) throw new Error('provider is closed');
-      port1.postMessage({ fn, args: encodeArgs(args) });
-      const msg = waitForResult() as { ok: true; result: unknown } | { ok: false; error: string };
+      const syncId = nextSyncId++;
+      diag('main-sync-call', { syncId, fn });
+      port1.postMessage({ syncId, fn, args: encodeArgs(args) });
+      const msg = waitForResult(syncId) as { ok: true; result: unknown } | { ok: false; error: string };
+      diag('main-sync-result', { syncId, fn, ok: msg.ok });
       if (msg.ok) return msg.result;
-      throw new Error(msg.error);
+      throw new Error(msg.error + diagTrace());
     },
     callAsync(fn, args) {
       if (closed) return Promise.reject(new Error('provider is closed'));

@@ -23,6 +23,11 @@ test('rust-parent: every flow with Rust spawning Node', async () => {
   assert.deepEqual(r.sumSteps, [10, 30, 60]);
   assert.equal(r.tsfnSum, 60);
   assert.deepEqual(r.reversed, [4, 3, 2, 1]);
+
+  // Synchronous-callback reentrancy round-trips identically when Rust is the
+  // parent: the outer call and the reentrant call each keep their own result.
+  assert.equal(r.reentrantOuter, 111, 'outer sync call returns its own result under callback reentrancy');
+  assert.equal(r.reentrantCbResult, 222, 'reentrant sync call in a callback returns its own result');
   assert.equal(r.big, '42');
   assert.equal(r.bigEcho, '123456789012345678901234567890', 'wide BigInt round-trips with full precision');
   assert.equal(r.bigEchoNeg, '-98765432109876543210987654321', 'negative wide BigInt round-trips');

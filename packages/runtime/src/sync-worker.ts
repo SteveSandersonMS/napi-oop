@@ -14,6 +14,7 @@
 import { workerData, MessagePort } from 'worker_threads';
 
 import { connectFromEnv, connectPath, launchProvider } from './index';
+import { diag, setDiagRole } from './diag';
 import type { Peer } from './peer';
 
 interface InitData {
@@ -27,6 +28,7 @@ interface InitData {
 }
 
 interface SyncRequest {
+  syncId: number;
   fn: string;
   args: unknown[];
 }
@@ -44,6 +46,7 @@ interface ReleaseRequest {
 }
 
 const { signal, port, asyncPort, mode, command, args, socketPath } = workerData as InitData;
+setDiagRole('worker');
 
 let close: (() => void | Promise<void>) | undefined;
 
@@ -79,22 +82,27 @@ async function init(): Promise<Peer> {
 
 void init().then(
   (peer) => {
-    // Signal that the worker is ready before handling any calls.
-    port.postMessage({ ready: true });
+    // Signal that the worker is ready before handling any calls. The ready
+    // message is tagged with the reserved sync id 0.
+    port.postMessage({ ready: true, syncId: 0 });
     wake();
 
-    // True exactly while a blocking sync call is being serviced — i.e. while the
-    // main thread is parked in `Atomics.wait`. Callbacks fired in this window are
-    // routed over the sync port so they are drained synchronously; otherwise the
-    // main thread is in its event loop and callbacks go over the async port.
-    let syncInFlight = false;
+    // The number of blocking sync calls currently being serviced — i.e. how many
+    // times the main thread is parked in `Atomics.wait`. It exceeds one when a
+    // synchronous callback reenters with another sync call. Callbacks fired while
+    // any sync call is in flight are routed over the sync port so they are
+    // drained synchronously; otherwise the main thread is in its event loop and
+    // callbacks go over the async port.
+    let syncInFlight = 0;
 
     const installCallback = (handle: number): void => {
       peer.registerCallback(handle, (...cbArgs: unknown[]) => {
-        if (syncInFlight) {
+        if (syncInFlight > 0) {
+          diag('worker-cb-sync', { handle, syncInFlight });
           port.postMessage({ cb: true, handle, args: cbArgs });
           wake();
         } else {
+          diag('worker-cb-async', { handle });
           asyncPort.postMessage({ cb: true, handle, args: cbArgs });
         }
       });
@@ -129,16 +137,19 @@ void init().then(
         return;
       }
       installCallbacks(msg.args);
-      syncInFlight = true;
+      syncInFlight += 1;
+      diag('worker-sync-call', { syncId: msg.syncId, fn: msg.fn, syncInFlight });
       peer.call(msg.fn, msg.args).then(
         (result) => {
-          syncInFlight = false;
-          port.postMessage({ ok: true, result });
+          syncInFlight -= 1;
+          diag('worker-sync-result', { syncId: msg.syncId, fn: msg.fn, ok: true });
+          port.postMessage({ syncId: msg.syncId, ok: true, result });
           wake();
         },
         (err: unknown) => {
-          syncInFlight = false;
-          port.postMessage({ ok: false, error: errorMessage(err) });
+          syncInFlight -= 1;
+          diag('worker-sync-result', { syncId: msg.syncId, fn: msg.fn, ok: false });
+          port.postMessage({ syncId: msg.syncId, ok: false, error: errorMessage(err) });
           wake();
         }
       );
@@ -150,20 +161,26 @@ void init().then(
         return;
       }
       installCallbacks(msg.args);
+      diag('worker-async-call', { id: msg.id, fn: msg.fn });
       peer.call(msg.fn, msg.args).then(
-        (result) => asyncPort.postMessage({ asyncResult: true, id: msg.id, ok: true, result }),
-        (err: unknown) =>
+        (result) => {
+          diag('worker-async-result', { id: msg.id, fn: msg.fn, ok: true });
+          asyncPort.postMessage({ asyncResult: true, id: msg.id, ok: true, result });
+        },
+        (err: unknown) => {
+          diag('worker-async-result', { id: msg.id, fn: msg.fn, ok: false });
           asyncPort.postMessage({
             asyncResult: true,
             id: msg.id,
             ok: false,
             error: errorMessage(err),
-          })
+          });
+        }
       );
     });
   },
   (err: unknown) => {
-    port.postMessage({ ok: false, error: errorMessage(err) });
+    port.postMessage({ ok: false, error: errorMessage(err), syncId: 0 });
     wake();
   }
 );
