@@ -103,6 +103,16 @@ async function exercise(provider: SyncProvider) {
   const preparedDelay = prepared.input?.delay ?? null;
   const preparedErrorNull = prepared.errorResult == null;
 
+  // A `None` Option<String> field must decode as `undefined` (key omitted),
+  // identical to in-proc napi-derive, and NEVER as `null`. Use STRICT checks:
+  // a consumer switching on `scope === undefined` (the CLI write_agent/
+  // list_agents scope handling) throws if the wire hands back `null`.
+  const scopeNone = native.makeScopeHolder(false);
+  const scopeNoneIsUndefined = scopeNone.scope === undefined;
+  const scopeNoneKeyAbsent = !('scope' in scopeNone);
+  const scopeSome = native.makeScopeHolder(true);
+  const scopeSomeValue = scopeSome.scope ?? null;
+
   const handle = native.makeCounter(7);
   const counter = native.readCounter(handle);
 
@@ -173,6 +183,9 @@ async function exercise(provider: SyncProvider) {
     preparedShellId,
     preparedDelay,
     preparedErrorNull,
+    scopeNoneIsUndefined,
+    scopeNoneKeyAbsent,
+    scopeSomeValue,
     counter,
     afterAdd,
     value,

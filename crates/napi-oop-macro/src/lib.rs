@@ -108,6 +108,16 @@ mod dual {
     fn expand_object(mut item: ItemStruct, attr2: proc_macro2::TokenStream) -> TokenStream {
         let name = item.ident.to_string();
 
+        // napi-derive's `#[napi(object)]` omits `None` `Option` fields from the JS
+        // object by default (`if field.is_some() { obj.set(..) }`), so in-proc a
+        // `None` field reads back as `undefined`. With `use_nullable = true` it
+        // instead sets the field to `null`. Mirror that on the wire: unless the
+        // struct opts into `use_nullable`, skip serializing `None` fields so the
+        // decoded object omits the key (→ `undefined`) rather than carrying an
+        // explicit MessagePack nil (→ `null`), keeping in-proc/out-of-proc
+        // semantics identical.
+        let use_nullable = attr_has_flag(&attr2, "use_nullable");
+
         // Per field: strip napi-rs's `#[napi(..)]` (a non-existent attribute in
         // this build) and translate `js_name = "x"` into the equivalent serde
         // rename so the wire field name still matches what JS expects.
@@ -128,11 +138,18 @@ mod dual {
                 );
 
                 let mut field_has_serde_rename = false;
+                let mut field_has_serde_skip = false;
                 for attr in &field.attrs {
                     if attr.path().is_ident("serde") {
                         let _ = attr.parse_nested_meta(|meta| {
                             if meta.path.is_ident("rename") {
                                 field_has_serde_rename = true;
+                            }
+                            if meta.path.is_ident("skip_serializing_if")
+                                || meta.path.is_ident("skip_serializing")
+                                || meta.path.is_ident("skip")
+                            {
+                                field_has_serde_skip = true;
                             }
                             if meta.input.peek(syn::Token![=]) {
                                 let value = meta.value()?;
@@ -171,6 +188,17 @@ mod dual {
                             .attrs
                             .push(syn::parse_quote!(#[serde(rename = #rename)]));
                     }
+                }
+
+                // Mirror napi-derive's default object behavior: omit `None`
+                // `Option` fields from the wire so they decode as `undefined`,
+                // not `null`. Skipped when the struct opts into `use_nullable`
+                // (which sets the field to `null` in-proc) or when the field
+                // already declares its own serde skip.
+                if !use_nullable && !field_has_serde_skip && is_option_type(&field.ty) {
+                    field.attrs.push(
+                        syn::parse_quote!(#[serde(skip_serializing_if = "Option::is_none", default)]),
+                    );
                 }
             }
         }
@@ -935,6 +963,38 @@ mod dual {
         if let syn::Type::Path(p) = inner {
             if let Some(seg) = p.path.segments.last() {
                 return seg.ident == "Env";
+            }
+        }
+        false
+    }
+
+    /// True if `ty` is an `Option<..>` (any path ending in `Option`). Used to
+    /// decide whether a struct field should skip serializing when `None` so it
+    /// decodes as `undefined` (napi-derive's default object behavior) rather
+    /// than an explicit `null`.
+    fn is_option_type(ty: &syn::Type) -> bool {
+        if let syn::Type::Path(p) = ty {
+            if let Some(seg) = p.path.segments.last() {
+                return seg.ident == "Option";
+            }
+        }
+        false
+    }
+
+    /// True if the `#[napi(..)]` attribute args contain the given flag enabled,
+    /// i.e. `flag = true` or a bare `flag`. Used to detect
+    /// `#[napi(object, use_nullable = true)]`. `flag = false` reads as disabled.
+    fn attr_has_flag(attr: &proc_macro2::TokenStream, flag: &str) -> bool {
+        // Normalize to a whitespace-free string (e.g. `object,use_nullable=true`)
+        // and inspect the comma-separated arg that names `flag`.
+        let normalized: String = attr.to_string().split_whitespace().collect();
+        for part in normalized.split(',') {
+            if let Some((key, value)) = part.split_once('=') {
+                if key == flag {
+                    return value == "true";
+                }
+            } else if part == flag {
+                return true;
             }
         }
         false

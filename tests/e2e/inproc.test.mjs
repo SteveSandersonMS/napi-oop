@@ -112,6 +112,14 @@ test('in-proc: every flow through the real napi addon door', async () => {
   assert.equal(prepared.input.delay, 1, 'nested object integral f64 field intact');
   assert.equal(prepared.errorResult ?? null, null, 'sibling Option<String> None is nil');
 
+  // Ground truth for the None-Option semantics the wire must match: napi-derive
+  // omits a `None` object field, so it reads back strictly `undefined` and its
+  // key is absent — never `null`. The out-of-process drivers assert the same.
+  const scopeNone = native.makeScopeHolder(false);
+  assert.strictEqual(scopeNone.scope, undefined, 'None Option<String> field is strictly undefined');
+  assert.equal('scope' in scopeNone, false, 'None Option<String> field key is omitted');
+  assert.equal(native.makeScopeHolder(true).scope, 'siblings', 'Some Option<String> field carries its value');
+
   // Class: sync ctor + async unsafe mutate + sync getter + async cross-method.
   const obj = new native.Counter(5);
   assert.equal(await obj.addSlow(3), 8);

@@ -48,6 +48,15 @@ test('rust-parent: every flow with Rust spawning Node', async () => {
   assert.equal(r.preparedDelay, 1, 'nested object integral f64 field intact');
   assert.equal(r.preparedErrorNull, true, 'sibling Option<String> None decodes as nil');
 
+  // A `None` Option<String> field must decode as `undefined` with its key
+  // omitted — identical to in-proc napi-derive — never as `null`. Guards a real
+  // CLI bug where `scope: null` over the wire was rejected by a strict
+  // `scope === undefined` switch as an "invalid scope".
+  assert.equal(r.scopeNoneIsUndefined, true, 'None Option<String> field is strictly undefined, not null');
+  assert.equal(r.scopeNoneKeyAbsent, true, 'None Option<String> field key is omitted from the object');
+  assert.equal(r.scopeSomeValue, 'siblings', 'Some Option<String> field carries its value');
+
+
   assert.equal(r.counter, 7);
 
   // Class round-trips identically when Rust is the parent.

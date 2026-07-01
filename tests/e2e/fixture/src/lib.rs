@@ -244,6 +244,37 @@ pub fn prepare_shell(input_json: String) -> ShellPrepareResult {
     }
 }
 
+/// A `#[napi(object)]` carrying an `Option<String>` that is frequently left
+/// `None` — the exact shape of a "prepared tool input" whose optional `scope`
+/// the caller switches on with a **strict** `scope === undefined` check.
+///
+/// napi-derive's default object codegen *omits* `None` fields from the JS object
+/// (`if field.is_some() { obj.set(..) }`), so in-proc `scope` reads back as
+/// `undefined` and `'scope' in obj === false`. The out-of-process wire must match
+/// exactly: a `None` field must NOT arrive as `null`, or a consumer doing
+/// `switch (scope) { case undefined: ...; default: throw }` falls through and
+/// throws. Regression guard for a real bug where a CLI tool saw `scope: null`
+/// over the wire and rejected it as an "invalid scope".
+#[napi(object)]
+pub struct ScopeHolder {
+    pub message: String,
+    pub scope: Option<String>,
+}
+
+/// Build a [`ScopeHolder`] whose `scope` is `None` (the omitted-field case) when
+/// `with_scope` is false, else `Some("siblings")`.
+#[napi]
+pub fn make_scope_holder(with_scope: bool) -> ScopeHolder {
+    ScopeHolder {
+        message: "hi".into(),
+        scope: if with_scope {
+            Some("siblings".into())
+        } else {
+            None
+        },
+    }
+}
+
 /// A plain (non-`#[napi]`) payload held behind an `External` handle. Its fields
 /// are read provider-side via `Deref`, never serialized to JS.
 pub struct Image {
