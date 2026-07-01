@@ -73,6 +73,16 @@ async function exercise(provider: SyncProvider) {
   const image = native.imageMake(4, 5);
   const imageArea = native.imageArea(image);
 
+  // Nested Option<#[napi(object)]> inside an outer object: the success variant
+  // carries `input: Some({ shellId, delay: 1.0 })` and `errorResult: None`. The
+  // caller must see a truthy `.input` with fields intact (delay is an integral
+  // f64) and a nil `.errorResult` — the "prepared input or error" tool shape.
+  const prepared = native.prepareShell('{"delay":1,"shellId":"e2e-shell"}');
+  const preparedHasInput = !!prepared.input;
+  const preparedShellId = prepared.input?.shellId ?? null;
+  const preparedDelay = prepared.input?.delay ?? null;
+  const preparedErrorNull = prepared.errorResult == null;
+
   const handle = native.makeCounter(7);
   const counter = native.readCounter(handle);
 
@@ -135,6 +145,10 @@ async function exercise(provider: SyncProvider) {
     pointLabel,
     pointDesc,
     imageArea,
+    preparedHasInput,
+    preparedShellId,
+    preparedDelay,
+    preparedErrorNull,
     counter,
     afterAdd,
     value,

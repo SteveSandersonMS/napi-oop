@@ -36,6 +36,13 @@ test('node-parent: every flow over the real socket boundary', async () => {
   // External<T> read provider-side through a &External<T> param via Deref.
   assert.equal(r.imageArea, 20, '&External<T> derefs to inner value');
 
+  // Nested Option<#[napi(object)]> success variant: `.input` is a truthy object
+  // with its fields intact (integral f64 delay survives) and `.errorResult` nil.
+  assert.equal(r.preparedHasInput, true, 'nested Option<object> Some decodes as a truthy object');
+  assert.equal(r.preparedShellId, 'e2e-shell', 'nested object string field intact');
+  assert.equal(r.preparedDelay, 1, 'nested object integral f64 field intact');
+  assert.equal(r.preparedErrorNull, true, 'sibling Option<String> None decodes as nil');
+
   assert.equal(r.counter, 7);
 
   // Class: sync ctor + async mutate + sync getter + async cross-method return.

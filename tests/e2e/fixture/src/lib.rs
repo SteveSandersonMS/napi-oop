@@ -151,6 +151,52 @@ pub fn describe_point(p: Point) -> String {
     format!("{}=({},{})", p.label_text, p.x, p.y)
 }
 
+/// A nested `#[napi(object)]` returned inside an `Option` field of an outer
+/// object, alongside a sibling `Option<object>` left `None`. This mirrors the
+/// "prepared input or an error result" shape real tools use: exactly one of the
+/// two optionals is `Some`. The inner object carries a required `f64` whose value
+/// is integral (`1.0`) — the case where a whole-number float must still decode as
+/// a truthy nested object (not collapse to nil), so the caller sees `.input`.
+#[napi(object)]
+pub struct PreparedShellInput {
+    pub shell_id: String,
+    pub delay: f64,
+}
+
+/// The error variant's payload: another `#[napi(object)]` carrying a field with a
+/// `#[napi(ts_type = …)]` override (a string-literal union). This guards that a
+/// `ts_type` field attribute on a *nested* object doesn't disturb the wire encode
+/// of the enclosing result — even when the field itself is left `None`.
+#[napi(object)]
+pub struct ShellExecutionResult {
+    pub text_result_for_llm: String,
+    #[napi(ts_type = "'success' | 'failure' | 'timeout' | 'rejected' | 'denied'")]
+    pub result_kind: String,
+    pub session_log: Option<String>,
+}
+
+#[napi(object)]
+pub struct ShellPrepareResult {
+    pub input: Option<PreparedShellInput>,
+    pub error_result: Option<ShellExecutionResult>,
+}
+
+/// Returns the success variant: `input` is `Some(nested object)` and
+/// `error_result` is `None`. Takes the tool's raw JSON string arg like the real
+/// prepare fns; the caller must observe a truthy `.input` with its fields intact
+/// and a nil `.errorResult`.
+#[napi]
+pub fn prepare_shell(input_json: String) -> ShellPrepareResult {
+    let delay = if input_json.contains("\"delay\"") { 1.0 } else { 0.0 };
+    ShellPrepareResult {
+        input: Some(PreparedShellInput {
+            shell_id: "e2e-shell".into(),
+            delay,
+        }),
+        error_result: None,
+    }
+}
+
 /// A plain (non-`#[napi]`) payload held behind an `External` handle. Its fields
 /// are read provider-side via `Deref`, never serialized to JS.
 pub struct Image {

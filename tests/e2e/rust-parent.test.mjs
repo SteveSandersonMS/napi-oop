@@ -29,6 +29,14 @@ test('rust-parent: every flow with Rust spawning Node', async () => {
   assert.equal(r.pointLabel, 'p', 'object field exposed camelCased');
   assert.equal(r.pointDesc, 'p=(2,3)', 'object decoded back by value');
   assert.equal(r.imageArea, 20, '&External<T> derefs to inner value');
+
+  // Nested Option<#[napi(object)]> success variant round-trips identically when
+  // Rust is the parent: truthy `.input` with fields intact, nil `.errorResult`.
+  assert.equal(r.preparedHasInput, true, 'nested Option<object> Some decodes as a truthy object');
+  assert.equal(r.preparedShellId, 'e2e-shell', 'nested object string field intact');
+  assert.equal(r.preparedDelay, 1, 'nested object integral f64 field intact');
+  assert.equal(r.preparedErrorNull, true, 'sibling Option<String> None decodes as nil');
+
   assert.equal(r.counter, 7);
 
   // Class round-trips identically when Rust is the parent.

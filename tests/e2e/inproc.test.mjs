@@ -88,6 +88,14 @@ test('in-proc: every flow through the real napi addon door', async () => {
   assert.equal(native.imageArea(image), 20);
   assert.equal(native.readCounter(native.makeCounter(7)), 7);
 
+  // Nested Option<#[napi(object)]> success variant through the real napi door:
+  // truthy `.input` with fields intact, nil `.errorResult`.
+  const prepared = native.prepareShell('{"delay":1,"shellId":"e2e-shell"}');
+  assert.ok(prepared.input, 'nested Option<object> Some is a truthy object');
+  assert.equal(prepared.input.shellId, 'e2e-shell', 'nested object string field intact');
+  assert.equal(prepared.input.delay, 1, 'nested object integral f64 field intact');
+  assert.equal(prepared.errorResult ?? null, null, 'sibling Option<String> None is nil');
+
   // Class: sync ctor + async unsafe mutate + sync getter + async cross-method.
   const obj = new native.Counter(5);
   assert.equal(await obj.addSlow(3), 8);
