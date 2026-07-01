@@ -3,7 +3,7 @@ name = "napi-oop-facade"
 description = "Drop-in `napi` path: existing #[napi] source uses `napi::...` and builds a dual-ABI cdylib (real napi in-proc + napi-oop out-of-proc) from one source."
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 rust-version.workspace = true
 

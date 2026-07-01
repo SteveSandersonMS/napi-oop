@@ -3,7 +3,7 @@ name = "napi-oop-macro"
 description = "The #[napi] attribute macro for napi-oop: emits the real napi ABI plus out-of-process remoting glue from one source."
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 rust-version.workspace = true
 

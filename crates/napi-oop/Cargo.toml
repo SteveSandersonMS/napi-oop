@@ -3,7 +3,7 @@ name = "napi-oop"
 description = "Out-of-process runtime for napi-style Node <-> Rust bindings."
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 rust-version.workspace = true
 
