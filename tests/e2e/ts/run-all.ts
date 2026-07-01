@@ -15,7 +15,7 @@ function providerCommand(): string {
   return join(__dirname, '..', '..', '..', 'target', 'release', 'e2e-provider');
 }
 
-async function exercise(provider: SyncProvider) {
+async function exercise(provider: SyncProvider, socketEnvBeforeConnect: string | undefined) {
   const native = bind(provider);
 
   // Sync fn: blocks and returns the value directly.
@@ -155,7 +155,13 @@ async function exercise(provider: SyncProvider) {
   const reset = obj.bertReset();
 
   return {
-    role: process.env[SOCKET_ENV] ? 'rust-parent' : 'node-parent',
+    role: socketEnvBeforeConnect ? 'rust-parent' : 'node-parent',
+    // Whether the one-shot `SOCKET_ENV` handoff token was cleared from this
+    // process's env once `connectFromEnvSync` consumed it. It MUST be gone so
+    // no child process we later spawn inherits it and hangs re-dialing the
+    // parent's single-client socket. Meaningful only in the rust-parent case
+    // (node-parent never had the var set).
+    socketEnvClearedAfterConnect: process.env[SOCKET_ENV] === undefined,
     add,
     greetNone,
     greetSome,
@@ -203,12 +209,13 @@ async function exercise(provider: SyncProvider) {
 }
 
 async function main(): Promise<void> {
-  const provider = process.env[SOCKET_ENV]
+  const socketEnvBeforeConnect = process.env[SOCKET_ENV];
+  const provider = socketEnvBeforeConnect
     ? connectFromEnvSync()
     : launchProviderSync({ command: providerCommand() });
   let result;
   try {
-    result = await exercise(provider);
+    result = await exercise(provider, socketEnvBeforeConnect);
   } finally {
     provider.close();
   }

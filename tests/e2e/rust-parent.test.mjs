@@ -12,6 +12,11 @@ test('rust-parent: every flow with Rust spawning Node', async () => {
   const r = parseResult(out);
 
   assert.equal(r.role, 'rust-parent');
+  assert.equal(
+    r.socketEnvClearedAfterConnect,
+    true,
+    'connectFromEnvSync clears the one-shot NAPI_OOP_SOCKET token so children do not inherit it'
+  );
   assert.equal(r.add, 5);
   assert.equal(r.greetNone, 'hello, world', 'undefined Option<String> arg decodes as None');
   assert.equal(r.greetSome, 'hello, Bert', 'present Option<String> arg decodes as Some');

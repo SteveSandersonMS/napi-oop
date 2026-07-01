@@ -108,6 +108,11 @@ export function connectFromEnv(role: Role = 'caller'): Promise<Peer> {
       new Error(`${SOCKET_ENV} not set; expected to be spawned as a child`)
     );
   }
+  // `SOCKET_ENV` is a one-shot handoff token: the parent exported it so this
+  // process could dial back exactly once. Clear it now that it has been
+  // consumed, so no child process this one later spawns inherits it and hangs
+  // trying to re-dial the parent's single-client socket.
+  delete process.env[SOCKET_ENV];
   return connectPath(socketPath, role);
 }
 

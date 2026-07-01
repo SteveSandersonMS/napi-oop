@@ -18,6 +18,7 @@ import { join } from 'path';
 
 import { camelToSnake } from './binding';
 import { diag, diagTrace } from './diag';
+import { SOCKET_ENV } from './index';
 
 /**
  * A handle to the out-of-process provider that mirrors native semantics:
@@ -344,7 +345,14 @@ export function bindClasses<T extends object>(
 
 /** Connect synchronously as a child, using the `NAPI_OOP_SOCKET` env var. */
 export function connectFromEnvSync(): SyncProvider {
-  return spawnSyncProvider('connectEnv', { command: '' });
+  const provider = spawnSyncProvider('connectEnv', { command: '' });
+  // The worker has already snapshotted the environment at construction (and it
+  // reads the socket path from `SOCKET_ENV` there). Clear the token from this
+  // thread now that the handoff is done, so any child process this one later
+  // spawns doesn't inherit the one-shot socket and hang dialing the parent.
+  // Mirrors `connectFromEnv`.
+  delete process.env[SOCKET_ENV];
+  return provider;
 }
 
 /**

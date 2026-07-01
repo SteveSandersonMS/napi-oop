@@ -1,6 +1,6 @@
 {
   "name": "napi-oop-runtime",
-  "version": "1.0.3",
+  "version": "1.0.5",
   "description": "Node-side runtime for napi-oop: connects to an out-of-process Rust peer.",
   "author": "Steve Sanderson",
   "license": "MIT",
