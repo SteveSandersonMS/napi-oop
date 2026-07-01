@@ -12,7 +12,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "napi-oop-runtime": "^0.1.0"
+    "napi-oop-runtime": "^1.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
