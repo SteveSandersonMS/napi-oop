@@ -1,8 +1,9 @@
 {
   "name": "napi-oop-runtime",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Node-side runtime for napi-oop: connects to an out-of-process Rust peer.",
-  "license": "MIT OR Apache-2.0",
+  "author": "Steve Sanderson",
+  "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
