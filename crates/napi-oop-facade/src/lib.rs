@@ -14,7 +14,7 @@
 //! one compiled function works on both paths. Explicit named re-exports shadow
 //! the glob, so the unified types win over the real napi ones.
 
-pub use ::napi::*;
+pub use ::real_napi::*;
 
 // Unified value types override the real napi ones (explicit > glob).
 pub use napi_oop::{BigInt, Buffer, External, ThreadsafeFunction, ThreadsafeFunctionCallMode, Utf16String};
@@ -28,7 +28,7 @@ pub mod threadsafe_function {
 }
 
 pub mod bindgen_prelude {
-    pub use ::napi::bindgen_prelude::*;
+    pub use ::real_napi::bindgen_prelude::*;
     // Override the value types here too, since napi-derive emits fully-qualified
     // `napi::bindgen_prelude::Buffer` etc. in its generated code.
     pub use napi_oop::{BigInt, Buffer, External, ThreadsafeFunction, ThreadsafeFunctionCallMode, Utf16String};

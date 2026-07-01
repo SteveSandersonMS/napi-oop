@@ -3,7 +3,7 @@
 //! One annotated source produces a **dual-ABI** result:
 //!
 //! - The real napi-rs `#[napi]` ABI is emitted (by delegating to
-//!   `::napi_derive::napi`) so the cdylib loads in-process in Node as a normal
+//!   `::napi_oop::__derive::napi`) so the cdylib loads in-process in Node as a normal
 //!   napi addon.
 //! - Out-of-process remoting glue is emitted alongside — a serde/wire-codec
 //!   dispatch thunk plus a registry entry the runtime advertises to a Node child
@@ -52,8 +52,8 @@ mod dual {
             // missing (de)serialization derives. Plain (int) `#[napi]` enums keep
             // napi-rs's numeric repr; both still get the real napi ABI.
             Item::Enum(e) if is_string_enum => expand_enum(e, attr2),
-            Item::Enum(e) => quote!(#[::napi_derive::napi(#attr2)] #e).into(),
-            other => quote!(#[::napi_derive::napi(#attr2)] #other).into(),
+            Item::Enum(e) => quote!(#[::napi_oop::__derive::napi(#attr2)] #e).into(),
+            other => quote!(#[::napi_oop::__derive::napi(#attr2)] #other).into(),
         }
     }
 
@@ -180,7 +180,7 @@ mod dual {
         inject_serde(&mut item.attrs, true);
 
         let expanded = quote! {
-            #[::napi_derive::napi(#attr2)]
+            #[::napi_oop::__derive::napi(#attr2)]
             #item
 
             const _: () = {
@@ -205,10 +205,10 @@ mod dual {
         // A struct without `js_name` still gets the real napi class ABI; only the
         // codegen rename registration is conditional.
         let Some(js_name) = js_name else {
-            return quote!(#[::napi_derive::napi(#attr2)] #item).into();
+            return quote!(#[::napi_oop::__derive::napi(#attr2)] #item).into();
         };
         quote! {
-            #[::napi_derive::napi(#attr2)]
+            #[::napi_oop::__derive::napi(#attr2)]
             #item
 
             const _: () = {
@@ -232,7 +232,7 @@ mod dual {
     /// names like napi-rs.
     fn expand_enum(mut item: syn::ItemEnum, attr2: proc_macro2::TokenStream) -> TokenStream {
         inject_serde(&mut item.attrs, false);
-        quote! { #[::napi_derive::napi(#attr2)] #item }.into()
+        quote! { #[::napi_oop::__derive::napi(#attr2)] #item }.into()
     }
 
     /// Inspect a type's existing container attributes and append whichever serde
@@ -410,7 +410,7 @@ mod dual {
         let napi_abi = if needs_adapter {
             build_inproc_fn_adapter(&func, &ip_js_name)
         } else {
-            quote! { #[::napi_derive::napi(#attr2)] #func }
+            quote! { #[::napi_oop::__derive::napi(#attr2)] #func }
         };
 
         let expanded = quote! {
@@ -569,7 +569,7 @@ mod dual {
             #func
 
             #(#doc_attrs)*
-            #[::napi_derive::napi(js_name = #ip_js_name)]
+            #[::napi_oop::__derive::napi(js_name = #ip_js_name)]
             pub #asyncness fn #adapter_ident(#(#params),*) #output {
                 #fn_name(#(#call_args),*)#await_tok
             }
@@ -626,7 +626,7 @@ mod dual {
             impl ::napi_oop::types::NapiClass for #self_ty {}
         };
         quote! {
-            #[::napi_derive::napi(#attr2)]
+            #[::napi_oop::__derive::napi(#attr2)]
             #imp
 
             #class_marker

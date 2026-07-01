@@ -15,9 +15,6 @@ crate-type = ["cdylib"]
 [dependencies]
 napi-oop = { path = "../../crates/napi-oop" }
 napi = { package = "napi-oop-facade", path = "../../crates/napi-oop-facade" }
-# The dual-emit macro expands to `::napi_derive::napi(..)`, so the real
-# napi-derive must be in the dependency graph for the in-proc ABI to compile.
-napi-derive = { version = "3", default-features = false }
 
 [build-dependencies]
 napi-build = "2"
