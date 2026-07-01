@@ -95,15 +95,22 @@ void init().then(
     // callbacks go over the async port.
     let syncInFlight = 0;
 
+    // Monotonic fire order stamped on every callback invocation, regardless of
+    // which port carries it. The main thread dispatches strictly in this order,
+    // so callbacks split across the sync and async ports are still observed in
+    // the exact order the provider fired them.
+    let cbSeq = 1;
+
     const installCallback = (handle: number): void => {
       peer.registerCallback(handle, (...cbArgs: unknown[]) => {
+        const seq = cbSeq++;
         if (syncInFlight > 0) {
           diag('worker-cb-sync', { handle, syncInFlight });
-          port.postMessage({ cb: true, handle, args: cbArgs });
+          port.postMessage({ cb: true, handle, args: cbArgs, seq });
           wake();
         } else {
           diag('worker-cb-async', { handle });
-          asyncPort.postMessage({ cb: true, handle, args: cbArgs });
+          asyncPort.postMessage({ cb: true, handle, args: cbArgs, seq });
         }
       });
     };

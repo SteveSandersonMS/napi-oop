@@ -134,6 +134,52 @@ pub fn exit_provider() {
     std::process::exit(0);
 }
 
+/// Callback used by the cross-port ordering repro
+/// ([`order_hold`] / [`order_arm`] / [`order_block_and_fire`]).
+static ORDER_CALLBACK: std::sync::Mutex<Option<napi::ThreadsafeFunction<String>>> =
+    std::sync::Mutex::new(None);
+
+/// Store the ordering-repro callback so it can be fired later from background
+/// threads (mirroring how real session events fire from provider-side work).
+#[napi]
+pub fn order_hold(cb: napi::ThreadsafeFunction<String>) {
+    *ORDER_CALLBACK.lock().unwrap() = Some(cb);
+}
+
+/// Fire the held ordering callback with `label` after `delay_ms`, from a
+/// background thread, and return immediately. Fired while the caller has **no
+/// sync call in flight**, so the worker routes the invocation over the *async*
+/// port (the caller's event loop), where it queues until the loop next turns.
+#[napi]
+pub fn order_arm(delay_ms: i32, label: String) {
+    let cb = ORDER_CALLBACK.lock().unwrap().clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms.max(0) as u64));
+        if let Some(cb) = cb {
+            cb.call(Ok(label), napi::ThreadsafeFunctionCallMode::NonBlocking);
+        }
+    });
+}
+
+/// Block for `block_ms`, firing the held callback with `label` `fire_at_ms` in
+/// (from a background thread). Because this call is **synchronous**, the caller's
+/// main thread is parked in `Atomics.wait` while it runs, so the mid-call
+/// invocation is routed over the *sync* port and drained before the blocking call
+/// returns — the exact window in which, absent global callback ordering, it can
+/// leapfrog an earlier invocation still queued on the async port.
+#[napi]
+pub fn order_block_and_fire(block_ms: i32, fire_at_ms: i32, label: String) -> i32 {
+    let cb = ORDER_CALLBACK.lock().unwrap().clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(fire_at_ms.max(0) as u64));
+        if let Some(cb) = cb {
+            cb.call(Ok(label), napi::ThreadsafeFunctionCallMode::NonBlocking);
+        }
+    });
+    std::thread::sleep(std::time::Duration::from_millis(block_ms.max(0) as u64));
+    0
+}
+
 #[napi]
 pub fn reverse_bytes(b: napi::Buffer) -> napi::Buffer {
     let mut v = b.to_vec();

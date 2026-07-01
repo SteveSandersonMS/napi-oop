@@ -67,6 +67,8 @@ interface CallbackInvoke {
   cb: true;
   handle: number;
   args: unknown[];
+  /** Monotonic per-provider fire order, assigned in the worker. */
+  seq: number;
 }
 interface CallbackRelease {
   cbRelease: true;
@@ -130,6 +132,30 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
     }
   };
 
+  // Global FIFO callback ordering. The worker tags every invocation with a
+  // monotonic `seq` (its fire order) and splits delivery across two ports: the
+  // sync port (drained synchronously under `Atomics.wait` while a blocking call
+  // is in flight) and the async port (the event loop, when the main thread is
+  // idle). Those two channels have different latencies, so a callback fired
+  // later can arrive first — e.g. one fired during a blocking call is drained off
+  // the sync port before an earlier one still queued on the async port. Dispatch
+  // strictly in `seq` order, buffering any that arrive ahead of their turn, so a
+  // caller observes callbacks in the exact order the provider fired them —
+  // matching an in-process `ThreadsafeFunction`'s single FIFO queue.
+  const cbReorder = new Map<number, { handle: number; args: unknown[] }>();
+  let nextCbSeq = 1;
+  const deliverCallback = (seq: number, handle: number, args: unknown[]): void => {
+    cbReorder.set(seq, { handle, args });
+    while (cbReorder.has(nextCbSeq)) {
+      const inv = cbReorder.get(nextCbSeq)!;
+      cbReorder.delete(nextCbSeq);
+      // Advance before dispatching so a callback that reenters (fires the next
+      // one synchronously via a nested sync call) sees a consistent cursor.
+      nextCbSeq++;
+      dispatchCallback(inv.handle, inv.args);
+    }
+  };
+
   // The provider connection has gone away. Release all callback keep-alive refs
   // (a dead provider can't fire them), fail outstanding async calls, and mark
   // the handle closed so further calls throw rather than block forever.
@@ -137,6 +163,7 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
     if (closed) return;
     closed = true;
     callbacks.clear();
+    cbReorder.clear();
     refCount = 0;
     asyncMain.unref();
     for (const p of pending.values()) p.reject(new Error('provider is closed'));
@@ -145,6 +172,7 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
 
   // Event-loop delivery of async results and callbacks. Fires whenever the main
   // thread is free; while a sync call blocks, these queue and run after it.
+  // Callback invocations are dispatched in global `seq` order.
   asyncMain.on('message', (msg: AsyncResult | CallbackInvoke | CallbackRelease | ProviderClosed) => {
     if ('providerClosed' in msg) {
       // The provider connection dropped (e.g. it crashed or was signalled). Its
@@ -162,7 +190,7 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
       return;
     }
     if ('cb' in msg) {
-      dispatchCallback(msg.handle, msg.args);
+      deliverCallback(msg.seq, msg.handle, msg.args);
       return;
     }
     const p = pending.get(msg.id);
@@ -189,7 +217,7 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
       if (msg && 'cb' in msg) {
         const inv = msg as CallbackInvoke;
         diag('main-cb-dispatch', { handle: inv.handle });
-        dispatchCallback(inv.handle, inv.args);
+        deliverCallback(inv.seq, inv.handle, inv.args);
         continue;
       }
       const sid = (msg as { syncId?: number }).syncId ?? 0;
@@ -267,6 +295,7 @@ function spawnSyncProvider(mode: 'launch' | 'connectEnv', opts: LaunchSyncOption
       // onProviderGone(), which may have already run if the provider died.
       closed = true;
       callbacks.clear();
+      cbReorder.clear();
       refCount = 0;
       asyncMain.unref();
       for (const p of pending.values()) p.reject(new Error('provider is closed'));
