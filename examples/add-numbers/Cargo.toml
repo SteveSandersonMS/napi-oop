@@ -11,6 +11,11 @@ publish = false
 [lib]
 name = "add_numbers_example"
 crate-type = ["cdylib"]
+# Load-only artifact (Node/host loads the cdylib); it has no Rust unit tests and
+# its real-napi in-proc code references `napi_*` symbols only a Node host
+# provides, so a `cargo test` harness would fail to run outside Node. Exercised
+# instead by the e2e suite across all three hosting modes.
+test = false
 
 [dependencies]
 napi-oop = { path = "../../crates/napi-oop" }
