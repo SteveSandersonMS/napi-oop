@@ -11,6 +11,9 @@ publish = false
 [lib]
 name = "tokio_fetch_example"
 crate-type = ["cdylib"]
+# Load-only artifact (see add-numbers): no Rust unit tests; its real-napi in-proc
+# code references `napi_*` symbols only a Node host provides. Exercised by e2e.
+test = false
 
 [dependencies]
 napi-oop = { path = "../../crates/napi-oop", features = ["tokio"] }
