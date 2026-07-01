@@ -11,7 +11,19 @@ rust-version.workspace = true
 # Real napi-rs: the unified value/callback types implement its `FromNapiValue`/
 # `ToNapiValue`/`TypeName`/`ValidateNapiValue` traits so `#[napi]` codegen accepts
 # them on the in-proc door, while their serde impls carry them on the wire door.
-napi = { version = "3", default-features = false, features = ["napi4", "napi6", "tokio_rt"] }
+#
+# `dyn-symbols` makes napi-rs resolve the `napi_*` C API from the host *process*
+# at runtime (via `dlopen`/module registration) instead of linking them at build
+# time. This is essential to the dual-ABI design: the single cdylib then has NO
+# hard napi symbol dependency on any platform, so (a) Node loads it in-process and
+# napi-rs binds the symbols from the Node process on registration, and (b) a thin
+# Rust host can dlopen the very same artifact for the out-of-process door without
+# a Node runtime -- the napi symbols simply stay unresolved panic stubs that the
+# out-of-process path never calls. It also lets every executable that links this
+# crate (unit/integration test harnesses) build and load on macOS/Linux, which
+# otherwise reject the undefined napi symbols. Windows already uses this path
+# unconditionally, so this only aligns the other platforms with it.
+napi = { version = "3", default-features = false, features = ["napi4", "napi6", "tokio_rt", "dyn-symbols"] }
 # Re-exported at `::napi_oop::__derive::napi` so the dual-emit macro can delegate
 # the in-proc ABI to the real napi-derive without every consumer needing a direct
 # napi-derive dependency. `type-def` (for `.d.ts` generation) is enabled by the
@@ -39,4 +51,6 @@ napi-oop-macro = { path = "../napi-oop-macro" }
 # The wire-glue regression tests apply `#[napi]`; the real `napi` crate must be
 # in scope for the in-proc ABI half to link (it is never invoked under `cargo
 # test`). The real napi-derive reaches the tests via `::napi_oop::__derive`.
-napi = { version = "3", default-features = false, features = ["napi4", "napi6", "tokio_rt"] }
+# `dyn-symbols` (see the [dependencies] entry) keeps the test harness free of
+# undefined napi symbols so it links and loads on macOS/Linux.
+napi = { version = "3", default-features = false, features = ["napi4", "napi6", "tokio_rt", "dyn-symbols"] }

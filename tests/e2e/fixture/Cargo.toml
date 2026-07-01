@@ -10,8 +10,8 @@ publish = false
 # host exe resolves; see `napi_oop_e2e_main`.
 [lib]
 crate-type = ["cdylib"]
-# Load-only artifact (see add-numbers): no Rust unit tests; its real-napi in-proc
-# code references `napi_*` symbols only a Node host provides. Exercised by e2e.
+# Load-only artifact (see add-numbers): no Rust unit tests, so no `cargo test`
+# harness is built. Exercised by the e2e suite.
 test = false
 
 [dependencies]

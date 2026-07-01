@@ -36,7 +36,12 @@ napi-oop-macro = { path = "../napi-oop-macro" }
 # dir by filename and find two `libnapi-*.rlib` candidates (this facade's own
 # output and real napi's), yielding E0464. A renamed dep is bound via an
 # explicit `--extern real_napi=<path>`, so there is no ambiguous lookup.
-real-napi = { package = "napi", version = "3", default-features = false, features = ["napi4", "napi6", "tokio_rt"] }
+#
+# `dyn-symbols` matches napi-oop's own napi dependency (they unify to one build):
+# napi symbols are resolved from the host process at runtime, so the dual-ABI
+# cdylib carries no hard napi symbol dependency on any platform. See the note on
+# napi-oop's `napi` dependency for the full rationale.
+real-napi = { package = "napi", version = "3", default-features = false, features = ["napi4", "napi6", "tokio_rt", "dyn-symbols"] }
 # Not referenced directly: this enables napi-derive's `type-def` feature, which
 # unifies onto the single napi-derive crate the dual-emit macro delegates to via
 # `::napi_oop::__derive`. Every real cdylib build depends on this facade, so this
