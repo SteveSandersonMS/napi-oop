@@ -225,6 +225,35 @@ impl From<u64> for BigInt {
     }
 }
 
+impl From<i64> for BigInt {
+    fn from(val: i64) -> Self {
+        BigInt {
+            sign_bit: val < 0,
+            words: vec![val.unsigned_abs()],
+        }
+    }
+}
+
+impl From<i128> for BigInt {
+    fn from(val: i128) -> Self {
+        let sign_bit = val < 0;
+        let val = val.unsigned_abs();
+        BigInt {
+            sign_bit,
+            words: vec![val as u64, (val >> 64) as u64],
+        }
+    }
+}
+
+impl From<u128> for BigInt {
+    fn from(val: u128) -> Self {
+        BigInt {
+            sign_bit: false,
+            words: vec![val as u64, (val >> 64) as u64],
+        }
+    }
+}
+
 /// MessagePack extension type id for arbitrary-precision integers, matching
 /// msgpackr's `useBigIntExtension` encoding. The JS runtime decodes ext-`0x42`
 /// unconditionally to a `bigint`, and emits it for values that overflow 64 bits.
@@ -708,6 +737,22 @@ mod tests {
         let back = from_wire::<BigInt>(v).unwrap();
         assert_eq!(back.words, big.words);
         assert!(!back.sign_bit);
+    }
+
+    #[test]
+    fn bigint_from_signed_and_wide_integers() {
+        // Match napi-rs's `From` impls for BigInt so `#[napi]` code that builds a
+        // BigInt from any integer width compiles and behaves identically.
+        assert!(BigInt::from(-1i64).sign_bit);
+        assert_eq!(BigInt::from(-1i64).words, vec![1]);
+        assert_eq!(BigInt::from(1i64), BigInt::from(1u64));
+        assert_eq!(BigInt::from(i64::MIN).words, vec![1u64 << 63]);
+
+        assert!(BigInt::from(-1i128).sign_bit);
+        assert_eq!(BigInt::from(-1i128).words, vec![1, 0]);
+        assert_eq!(BigInt::from(1i128), BigInt::from(1u128));
+        assert_eq!(BigInt::from(u128::MAX).words, vec![u64::MAX, u64::MAX]);
+        assert_eq!(BigInt::from(1u128 << 64).words, vec![0, 1]);
     }
 
     #[test]
