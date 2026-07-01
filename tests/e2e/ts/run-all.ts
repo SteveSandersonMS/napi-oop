@@ -9,7 +9,7 @@ import { join } from 'path';
 
 import { SOCKET_ENV, connectFromEnvSync, launchProviderSync, type SyncProvider } from 'napi-oop-runtime';
 
-import { bind } from './generated/bindings';
+import { bind, ANSWER_TO_EVERYTHING } from './generated/bindings';
 
 function providerCommand(): string {
   return join(__dirname, '..', '..', '..', 'target', 'release', 'e2e-provider');
@@ -30,6 +30,14 @@ async function exercise(provider: SyncProvider) {
   // arity, and the provider must decode the missing tail as `None` (factor=1).
   const scaleOmitted = native.scale(7);
   const scaleGiven = native.scale(7, 3);
+
+  // `#[napi]` constant: exposed to JS as its concrete value (not a callable
+  // stub), and — the regression this guards — passable straight into a numeric
+  // parameter across the boundary. Before constants were modelled, the value was
+  // a function stub that serialized as a callback handle and failed to decode as
+  // f64 provider-side.
+  const constAnswer = ANSWER_TO_EVERYTHING;
+  const echoedConst = native.echoF64(ANSWER_TO_EVERYTHING);
 
   // Concurrency + non-blocking proof: two 200ms async calls overlap (finishing
   // well under 400ms), and a 30ms timer fires *while they are in flight* — which
@@ -143,6 +151,8 @@ async function exercise(provider: SyncProvider) {
     greetSome,
     scaleOmitted,
     scaleGiven,
+    constAnswer,
+    echoedConst,
     multiply: [p, q],
     concurrentMs,
     timerFiredDuringCall,

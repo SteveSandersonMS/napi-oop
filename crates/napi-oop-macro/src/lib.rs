@@ -53,6 +53,7 @@ mod dual {
             // napi-rs's numeric repr; both still get the real napi ABI.
             Item::Enum(e) if is_string_enum => expand_enum(e, attr2),
             Item::Enum(e) => quote!(#[::napi_oop::__derive::napi(#attr2)] #e).into(),
+            Item::Const(c) => expand_const(c, js_name, attr2),
             other => quote!(#[::napi_oop::__derive::napi(#attr2)] #other).into(),
         }
     }
@@ -233,6 +234,47 @@ mod dual {
     fn expand_enum(mut item: syn::ItemEnum, attr2: proc_macro2::TokenStream) -> TokenStream {
         inject_serde(&mut item.attrs, false);
         quote! { #[::napi_oop::__derive::napi(#attr2)] #item }.into()
+    }
+
+    /// A `#[napi]` constant: a compile-time value. napi-rs exposes it in-proc as
+    /// a JS `const` (delegated unchanged); out-of-process there is nothing to
+    /// call, so we register the constant's name, type, and a value thunk. The
+    /// manifest evaluates the thunk and embeds the concrete value, and the peer
+    /// exposes it directly — no dispatch round-trip. The const is exported under
+    /// its Rust name verbatim (as napi-rs does), unless `#[napi(js_name = "…")]`
+    /// overrides it.
+    fn expand_const(
+        item: syn::ItemConst,
+        js_name: Option<String>,
+        attr2: proc_macro2::TokenStream,
+    ) -> TokenStream {
+        let name = item.ident.to_string();
+        let ident = item.ident.clone();
+        // Whitespace-free Rust type string (e.g. `i64`), matching the form
+        // `rust_to_ts` expects for its type mapping.
+        let ty_str = item
+            .ty
+            .to_token_stream()
+            .to_string()
+            .split_whitespace()
+            .collect::<String>();
+        let js = js_name.unwrap_or_default();
+        quote! {
+            #[::napi_oop::__derive::napi(#attr2)]
+            #item
+
+            const _: () = {
+                ::napi_oop::inventory::submit! {
+                    ::napi_oop::registry::RegisteredConst {
+                        name: #name,
+                        js_name: #js,
+                        rust_type: #ty_str,
+                        value: || ::napi_oop::registry::const_value_json(&#ident),
+                    }
+                }
+            };
+        }
+        .into()
     }
 
     /// Inspect a type's existing container attributes and append whichever serde

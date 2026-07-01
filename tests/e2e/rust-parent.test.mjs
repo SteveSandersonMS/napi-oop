@@ -17,6 +17,12 @@ test('rust-parent: every flow with Rust spawning Node', async () => {
   assert.equal(r.greetSome, 'hello, Bert', 'present Option<String> arg decodes as Some');
   assert.equal(r.scaleOmitted, 7, 'omitted trailing Option arg decodes as None');
   assert.equal(r.scaleGiven, 21, 'present trailing Option arg decodes as Some');
+  assert.equal(r.constAnswer, 42, '#[napi] const is exposed as its concrete value, not a stub');
+  assert.equal(
+    r.echoedConst,
+    42,
+    'a #[napi] const passed as an Option<f64> arg decodes as a number (not a callback map)'
+  );
   assert.deepEqual(r.multiply, [42, 72]);
   assert.equal(r.timerFiredDuringCall, true, 'event loop stays free during async calls');
   assert.equal(r.sum, 60);

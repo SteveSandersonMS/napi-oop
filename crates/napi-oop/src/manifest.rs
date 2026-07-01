@@ -14,7 +14,9 @@
 
 use serde::Serialize;
 
-use crate::registry::{RegisteredClassRename, RegisteredFn, RegisteredMethod, RegisteredObject};
+use crate::registry::{
+    RegisteredClassRename, RegisteredConst, RegisteredFn, RegisteredMethod, RegisteredObject,
+};
 
 /// One function's signature, with TypeScript types already mapped. The JS name is
 /// the camelCase form napi-rs would expose.
@@ -67,12 +69,28 @@ pub struct ObjectSignature {
     pub field_types: Vec<String>,
 }
 
+/// One `#[napi]` constant: its JS name, TS type, and concrete value. The value
+/// is embedded directly so the peer exposes it without any dispatch round-trip
+/// (constants are compile-time and cannot change at runtime).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ConstSignature {
+    /// JS-facing name (verbatim Rust const name, as napi-rs exports it).
+    pub js_name: String,
+    /// Rust const name.
+    pub rust_name: String,
+    /// TypeScript type of the value (mapped from the Rust type).
+    pub ts_type: String,
+    /// The constant's concrete value, ready to expose to JS.
+    pub value: serde_json::Value,
+}
+
 /// The full set of exposed functions, ready to serialize for the TS generator.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Manifest {
     pub functions: Vec<FnSignature>,
     pub classes: Vec<ClassSignature>,
     pub objects: Vec<ObjectSignature>,
+    pub constants: Vec<ConstSignature>,
 }
 
 /// Map a (whitespace-stripped) Rust type to its TypeScript equivalent. Falls back
@@ -276,10 +294,24 @@ pub fn manifest() -> Manifest {
                 .collect(),
         })
         .collect();
+    let constants = inventory::iter::<RegisteredConst>
+        .into_iter()
+        .map(|c| ConstSignature {
+            js_name: if c.js_name.is_empty() {
+                c.name.to_string()
+            } else {
+                c.js_name.to_string()
+            },
+            rust_name: c.name.to_string(),
+            ts_type: rust_to_ts_with(c.rust_type, &known),
+            value: (c.value)(),
+        })
+        .collect();
     Manifest {
         functions,
         classes,
         objects,
+        constants,
     }
 }
 
@@ -291,12 +323,21 @@ pub fn manifest_json() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::{RegisteredClassRename, RegisteredMethod};
+    use crate::registry::{RegisteredClassRename, RegisteredConst, RegisteredMethod};
 
     inventory::submit! {
         RegisteredClassRename {
             rust_name: "ManifestRustBox",
             js_name: "RenamedManifestBox",
+        }
+    }
+
+    inventory::submit! {
+        RegisteredConst {
+            name: "MANIFEST_TEST_ANSWER",
+            js_name: "",
+            rust_type: "i64",
+            value: || serde_json::Value::from(42),
         }
     }
 
@@ -384,5 +425,19 @@ mod tests {
         assert_eq!(clone_box.rust_name, "ManifestRustBox.clone_box");
         assert_eq!(clone_box.params, vec!["Array<RenamedManifestBox>"]);
         assert_eq!(clone_box.ret, "RenamedManifestBox");
+    }
+
+    #[test]
+    fn manifest_surfaces_constants_with_value_and_type() {
+        let manifest = manifest();
+        let konst = manifest
+            .constants
+            .iter()
+            .find(|c| c.rust_name == "MANIFEST_TEST_ANSWER")
+            .expect("registered constant is surfaced in the manifest");
+
+        assert_eq!(konst.js_name, "MANIFEST_TEST_ANSWER");
+        assert_eq!(konst.ts_type, "number");
+        assert_eq!(konst.value, serde_json::Value::from(42));
     }
 }

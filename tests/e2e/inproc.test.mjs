@@ -28,6 +28,11 @@ test('in-proc: every flow through the real napi addon door', async () => {
   assert.equal(native.scale(7), 7);
   assert.equal(native.scale(7, 3), 21);
 
+  // `#[napi]` constant: the in-proc napi door exposes it as a plain value, and it
+  // passes straight into a numeric param. Mirrors the out-of-process assertions.
+  assert.equal(native.ANSWER_TO_EVERYTHING, 42);
+  assert.equal(native.echoF64(native.ANSWER_TO_EVERYTHING), 42);
+
   // async Rust fn surfaces as a Promise (never blocks), and overlaps concurrently.
   let timerFiredDuringCall = false;
   const timer = new Promise((r) =>

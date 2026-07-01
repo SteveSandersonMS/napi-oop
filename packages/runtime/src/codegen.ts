@@ -35,11 +35,22 @@ export interface ObjectSignature {
   fieldTypes: string[];
 }
 
+/** A `#[napi]` constant: a compile-time value exported at module scope, exactly
+ *  as napi-rs emits `export const NAME`. The value is embedded from the manifest
+ *  (constants never dispatch). */
+export interface ConstSignature {
+  jsName: string;
+  rustName: string;
+  tsType: string;
+  value: unknown;
+}
+
 /** The provider's exposed surface. */
 export interface Manifest {
   functions: FnSignature[];
   classes: ClassSignature[];
   objects: ObjectSignature[];
+  constants: ConstSignature[];
 }
 
 /** Parse manifest JSON (camelCase keys come straight from serde rename). */
@@ -70,6 +81,12 @@ export function parseManifest(json: string): Manifest {
       field_names: string[];
       field_types: string[];
     }[];
+    constants?: {
+      js_name: string;
+      rust_name: string;
+      ts_type: string;
+      value: unknown;
+    }[];
   };
   return {
     functions: raw.functions.map((f) => ({
@@ -96,6 +113,12 @@ export function parseManifest(json: string): Manifest {
       name: o.name,
       fieldNames: o.field_names,
       fieldTypes: o.field_types,
+    })),
+    constants: (raw.constants ?? []).map((c) => ({
+      jsName: c.js_name,
+      rustName: c.rust_name,
+      tsType: c.ts_type,
+      value: c.value,
     })),
   };
 }
@@ -155,6 +178,9 @@ export function generateTs(manifest: Manifest, name = 'Bindings'): string {
   // handle the binding wraps into the matching proxy.
   const factoryFns = manifest.functions.filter((f) => classNames.has(f.ret));
   const objectDecls = manifest.objects.map(generateObject).join('\n\n');
+  const constDecls = (manifest.constants ?? [])
+    .map((c) => `export const ${c.jsName}: ${c.tsType} = ${JSON.stringify(c.value)};`)
+    .join('\n');
   const methods = manifest.functions
     .map((f) => `  ${f.jsName}(${paramList(f)}): ${returnType(f)};`)
     .join('\n');
@@ -178,7 +204,7 @@ import {
 
 export type { ExternalObject };
 
-${objectDecls}${objectDecls ? '\n\n' : ''}export interface ${name} {
+${objectDecls}${objectDecls ? '\n\n' : ''}${constDecls}${constDecls ? '\n\n' : ''}export interface ${name} {
 ${methods}
 ${classProps}
 }

@@ -41,6 +41,25 @@ pub fn scale(value: i32, factor: Option<i32>) -> i32 {
     value * factor.unwrap_or(1)
 }
 
+/// A `#[napi]` constant: a compile-time value. In-process, napi-rs exposes it as
+/// a plain JS `const`; out-of-process it must surface as the SAME concrete value
+/// (baked into the manifest), never a callable stub. Regression guard for a bug
+/// where the out-of-process surface handed back a *function* for a constant: read
+/// on the JS side and passed straight into a numeric parameter, that stub
+/// serialized as a callback handle and failed to decode provider-side
+/// ("invalid type: map, expected f64"). [`echo_f64`] passes this constant across
+/// the boundary as an `Option<f64>` argument to prove it decodes as a number.
+#[napi]
+pub const ANSWER_TO_EVERYTHING: i64 = 42;
+
+/// Echo an `Option<f64>` back (`0.0` when omitted). Paired with
+/// [`ANSWER_TO_EVERYTHING`] to prove a `#[napi]` constant round-trips as a real
+/// number when handed to a function argument across the process boundary.
+#[napi]
+pub fn echo_f64(value: Option<f64>) -> f64 {
+    value.unwrap_or(0.0)
+}
+
 #[napi]
 pub fn sum_each(values: Vec<i32>, on_step: impl Fn(i32)) -> i32 {
     let mut total = 0;

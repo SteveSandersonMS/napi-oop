@@ -110,6 +110,34 @@ pub struct RegisteredObject {
 
 inventory::collect!(RegisteredObject);
 
+/// One `#[napi]` constant: a compile-time value exported to JS. In-process,
+/// napi-rs exposes it as a JS `const`; out-of-process there is nothing to
+/// *call*, so the value is baked into the manifest and the peer reads it
+/// directly (no dispatch round-trip). Mirrors napi-rs, which exports the const
+/// under its Rust name verbatim (e.g. SCREAMING_SNAKE), not camelCased.
+pub struct RegisteredConst {
+    /// Rust const name, exported to JS verbatim (as napi-rs does).
+    pub name: &'static str,
+    /// Explicit JS-facing name from `#[napi(js_name = "…")]`, or `""` to use
+    /// [`name`](Self::name) verbatim.
+    pub js_name: &'static str,
+    /// The Rust type of the constant (e.g. `"i64"`), mapped to TS by the
+    /// manifest so the generated binding types the value correctly.
+    pub rust_type: &'static str,
+    /// Thunk producing the constant's JSON value. Evaluated once at manifest
+    /// emit time and embedded verbatim, so the peer never dispatches for it.
+    pub value: fn() -> serde_json::Value,
+}
+
+inventory::collect!(RegisteredConst);
+
+/// Serialize a `#[napi]` constant's value to JSON for embedding in the manifest.
+/// Used by the `#[napi]` macro's generated [`RegisteredConst`] thunk; falls back
+/// to `null` for the (practically impossible) case of a non-serializable const.
+pub fn const_value_json<T: serde::Serialize>(value: &T) -> serde_json::Value {
+    serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
+}
+
 /// A [`Callbacks`] that drops every invocation — for fns that take no callbacks
 /// and for tests. (Fire-and-forget, so dropping is observably "queued, ignored".)
 pub struct NoCallbacks;
