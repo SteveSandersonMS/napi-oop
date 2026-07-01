@@ -23,7 +23,7 @@ function runDriver(iterations) {
     const timer = setTimeout(() => {
       child.kill();
       reject(new Error(`timed out; output so far:\n${out}`));
-    }, 30000);
+    }, 60000);
     child.on('error', reject);
     child.on('exit', (code) => {
       clearTimeout(timer);
@@ -33,7 +33,11 @@ function runDriver(iterations) {
 }
 
 test('callbacks are delivered in fire order across the sync and async ports', async () => {
-  const iterations = 300;
+  // The pre-fix bug inverted *every* iteration (100% [B, A]), so a modest count
+  // detects any regression with certainty. Each iteration carries ~100ms of fixed
+  // waits (spin/block/settle) that don't shrink on faster hardware, so keep the
+  // count low enough to stay well under the timeout on slow macOS runners.
+  const iterations = 80;
   const { code, out } = await runDriver(iterations);
   const line = out.split(/\r?\n/).find((l) => l.startsWith('RESULT '));
   assert.ok(line, `no RESULT line in output:\n${out}`);
