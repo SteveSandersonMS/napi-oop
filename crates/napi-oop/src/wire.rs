@@ -57,7 +57,53 @@ pub fn to_wire<T: Serialize + ?Sized>(value: &T) -> Result<Value, WireError> {
 
 /// Decode a value from the dynamic wire representation.
 pub fn from_wire<T: DeserializeOwned>(value: Value) -> Result<T, WireError> {
-    rmpv::ext::from_value(value).map_err(|e| WireError(e.to_string()))
+    rmpv::ext::from_value(normalize_integral_floats(value)).map_err(|e| WireError(e.to_string()))
+}
+
+/// Recursively rewrite integral floating-point values into integers.
+///
+/// JavaScript has a single `number` type, so an integer like `Date.now()` is
+/// still a `number`. MessagePack encoders on the JS side (msgpackr) encode any
+/// integer wider than 32 bits as a float64 rather than an int64, so a value
+/// destined for a Rust `i64`/`u64` parameter arrives as [`Value::F64`] and
+/// `rmpv` refuses to decode it ("invalid type: floating point, expected i64").
+///
+/// Because JS cannot distinguish `2` from `2.0`, and every integral float below
+/// 2^53 round-trips losslessly, we canonicalize integral floats to integers
+/// before deserializing. This lets integer parameters decode correctly while
+/// float parameters are unaffected: `rmpv` already coerces an integer back to
+/// `f64` (a Rust `f64` param routinely receives an integral JS number encoded as
+/// a MessagePack int, e.g. `1.0`), so the reverse mapping is already required and
+/// exercised.
+fn normalize_integral_floats(value: Value) -> Value {
+    match value {
+        Value::F64(f) if f.fract() == 0.0 => integral_float_to_int(f).unwrap_or(Value::F64(f)),
+        Value::F32(f) if f.fract() == 0.0 => {
+            integral_float_to_int(f as f64).unwrap_or(Value::F32(f))
+        }
+        Value::Array(items) => {
+            Value::Array(items.into_iter().map(normalize_integral_floats).collect())
+        }
+        Value::Map(entries) => Value::Map(
+            entries
+                .into_iter()
+                .map(|(k, v)| (normalize_integral_floats(k), normalize_integral_floats(v)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// Convert an integral `f64` to a MessagePack integer if it fits exactly in
+/// `i64` or `u64`; otherwise return `None` to leave it as a float.
+fn integral_float_to_int(f: f64) -> Option<Value> {
+    if f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+        Some(Value::from(f as i64))
+    } else if f >= 0.0 && f <= u64::MAX as f64 {
+        Some(Value::from(f as u64))
+    } else {
+        None
+    }
 }
 
 /// Key marking a value as a remote callback handle: `{ "__napi_cb": <id> }`.
@@ -132,5 +178,61 @@ mod tests {
         let xs = vec![Some(1u8), None, Some(3)];
         let v = to_wire(&xs).unwrap();
         assert_eq!(from_wire::<Vec<Option<u8>>>(v).unwrap(), xs);
+    }
+
+    #[test]
+    fn large_integer_encoded_as_float_decodes_to_i64() {
+        // msgpackr encodes integers wider than 32 bits (e.g. `Date.now()`) as a
+        // MessagePack float64, not an int64. Such a value must still decode into
+        // an integer parameter rather than failing with "expected i64".
+        let timestamp = 1_782_910_509_260i64;
+        let v = Value::F64(timestamp as f64);
+        assert_eq!(from_wire::<i64>(v).unwrap(), timestamp);
+
+        // A value above i64::MAX but within JS's exact-integer range routes
+        // through the u64 branch. (JS numbers are only exact below 2^53, so this
+        // is the practical ceiling for a losslessly-transported integer.)
+        let big_unsigned = 1u64 << 52;
+        let v = Value::F64(big_unsigned as f64);
+        assert_eq!(from_wire::<u64>(v).unwrap(), big_unsigned);
+    }
+
+    #[test]
+    fn integral_float_still_decodes_to_f64() {
+        // A float parameter that receives an integral value must be unaffected by
+        // the integer normalization.
+        let v = Value::F64(3.0);
+        assert_eq!(from_wire::<f64>(v).unwrap(), 3.0);
+    }
+
+    #[test]
+    fn fractional_float_is_preserved() {
+        let v = Value::F64(3.5);
+        assert_eq!(from_wire::<f64>(v).unwrap(), 3.5);
+    }
+
+    #[test]
+    fn integral_floats_nested_in_struct_decode() {
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Event {
+            timestamp_ms: i64,
+            ratio: f64,
+        }
+        // Simulate the msgpackr wire form: the large integer arrived as a float.
+        let wire = Value::Map(vec![
+            (
+                Value::from("timestamp_ms"),
+                Value::F64(1_782_910_509_260f64),
+            ),
+            (Value::from("ratio"), Value::F64(0.5)),
+        ]);
+        let decoded = from_wire::<Event>(wire).unwrap();
+        assert_eq!(
+            decoded,
+            Event {
+                timestamp_ms: 1_782_910_509_260,
+                ratio: 0.5
+            }
+        );
     }
 }
