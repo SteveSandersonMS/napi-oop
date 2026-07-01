@@ -9,7 +9,9 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use napi::bindgen_prelude::{self as napi_bp, FromNapiValue, ToNapiValue, TypeName, ValidateNapiValue};
+use napi::bindgen_prelude::{
+    self as napi_bp, FromNapiValue, ToNapiValue, TypeName, ValidateNapiValue,
+};
 use napi::sys;
 use serde::{Deserialize, Serialize};
 
@@ -73,7 +75,10 @@ impl TypeName for Buffer {
 }
 
 impl ValidateNapiValue for Buffer {
-    unsafe fn validate(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<sys::napi_value> {
+    unsafe fn validate(
+        env: sys::napi_env,
+        napi_val: sys::napi_value,
+    ) -> napi::Result<sys::napi_value> {
         unsafe { napi_bp::Buffer::validate(env, napi_val) }
     }
 }
@@ -156,7 +161,10 @@ impl TypeName for Utf16String {
 }
 
 impl ValidateNapiValue for Utf16String {
-    unsafe fn validate(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<sys::napi_value> {
+    unsafe fn validate(
+        env: sys::napi_env,
+        napi_val: sys::napi_value,
+    ) -> napi::Result<sys::napi_value> {
         unsafe { napi_bp::Utf16String::validate(env, napi_val) }
     }
 }
@@ -664,7 +672,9 @@ impl<T: Send + Sync + 'static> FromNapiValue for External<T> {
 
 impl<T: Send + Sync + 'static> ToNapiValue for External<T> {
     unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> napi::Result<sys::napi_value> {
-        unsafe { napi_bp::External::<Arc<T>>::to_napi_value(env, napi_bp::External::new(val.value)) }
+        unsafe {
+            napi_bp::External::<Arc<T>>::to_napi_value(env, napi_bp::External::new(val.value))
+        }
     }
 }
 

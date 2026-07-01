@@ -11,13 +11,13 @@
 use std::io::{self, Read, Write};
 
 use interprocess::local_socket::prelude::*;
-use interprocess::local_socket::{
-    Listener, ListenerNonblockingMode, ListenerOptions, Name, Stream,
-};
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 use interprocess::local_socket::GenericFilePath;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use interprocess::local_socket::GenericNamespaced;
+use interprocess::local_socket::{
+    Listener, ListenerNonblockingMode, ListenerOptions, Name, Stream,
+};
 
 /// A bidirectional, ordered byte stream connecting the Node and Rust peers.
 ///

@@ -70,7 +70,11 @@ fn darwin_user_temp_dir() -> Option<PathBuf> {
             return None;
         }
         let mut buf = vec![0u8; needed];
-        let written = libc::confstr(libc::_CS_DARWIN_USER_TEMP_DIR, buf.as_mut_ptr().cast(), needed);
+        let written = libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buf.as_mut_ptr().cast(),
+            needed,
+        );
         if written == 0 || written > needed {
             return None;
         }
