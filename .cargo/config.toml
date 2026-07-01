@@ -1,0 +1,20 @@
+# napi-oop's crates (and the example/fixture cdylibs) link against the real
+# napi-rs crate, whose `Drop` impls and threadsafe-function glue reference
+# `napi_*` symbols that exist only inside a Node host process. For the real
+# `.node` cdylib these are legitimately undefined at link time and resolved when
+# Node loads the addon (napi-build permits this).
+#
+# `cargo test` additionally builds a *test executable* for each crate. On
+# macOS/Linux the linker rejects undefined symbols in an executable, so those
+# test binaries fail to link — even though the tests exercise only the
+# out-of-process wire glue and never call into napi at runtime. (Windows links
+# fine because napi-rs resolves the symbols through a generated import library.)
+#
+# Allow the undefined napi symbols so the test executables link; being
+# unreferenced at runtime, they are never resolved. Shared objects already
+# permit undefined symbols, so this is a no-op for the real cdylib artifacts.
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"]
+
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "link-arg=-Wl,--unresolved-symbols=ignore-all"]
